@@ -1,0 +1,29 @@
+# Google OAuth credentials
+credentials.json
+token.json
+
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Generated podcast files
+clips/
+episodes/
+logs/
+
+# Local voice reference files
+voices/
+
+# Generated scripts
+scripts/
+
+# Audio / test outputs
+Audio Tests/
+*.wav
+*.mp3
