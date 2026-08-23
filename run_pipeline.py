@@ -23,19 +23,56 @@ GENERATE_EPISODE = PROJECT_DIR / "generate_episode.py"
 def find_latest_script():
     today = datetime.now().strftime("%Y-%m-%d")
 
-    matching_scripts = [
+    all_scripts = list(SCRIPTS_DIR.glob("*.md"))
+
+    # 1. Prioritize scripts dated today
+    today_scripts = [
         path
-        for path in SCRIPTS_DIR.glob("*.md")
+        for path in all_scripts
         if today in path.stem
     ]
 
-    if not matching_scripts:
-        raise FileNotFoundError(
-            f"No podcast script found for {today} in: {SCRIPTS_DIR}"
+    if today_scripts:
+        return max(
+            today_scripts,
+            key=lambda path: path.stat().st_mtime
         )
 
+    # 2. If no script exists for today, extract dates from all filenames
+    dated_scripts = []
+
+    for path in all_scripts:
+        match = re.search(r"\d{4}-\d{2}-\d{2}", path.stem)
+
+        if match:
+            script_date = datetime.strptime(
+                match.group(),
+                "%Y-%m-%d"
+            ).date()
+
+            dated_scripts.append((path, script_date))
+
+    if not dated_scripts:
+        raise FileNotFoundError(
+            f"No dated podcast scripts found in: {SCRIPTS_DIR}"
+        )
+
+    # 3. Find the latest date represented in the filenames
+    latest_date = max(
+        script_date
+        for _, script_date in dated_scripts
+    )
+
+    # 4. Get all scripts belonging to that latest date
+    latest_date_scripts = [
+        path
+        for path, script_date in dated_scripts
+        if script_date == latest_date
+    ]
+
+    # 5. If multiple exist for that date, use the most recently modified
     latest_script = max(
-        matching_scripts,
+        latest_date_scripts,
         key=lambda path: path.stat().st_mtime
     )
 
