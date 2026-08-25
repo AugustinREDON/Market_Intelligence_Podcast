@@ -316,7 +316,7 @@ def upload_episode(episode_path):
     )
 
     file_metadata = {
-        "name": episode_path.name,
+        "name": f"MIP_{episode_date}.mp3",
         "parents": [week_folder_id],
     }
 
