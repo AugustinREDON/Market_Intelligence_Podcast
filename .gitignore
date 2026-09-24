@@ -4,6 +4,7 @@ token.json
 
 # Python virtual environment
 .venv/
+.venv-old/
 
 # Python cache
 __pycache__/

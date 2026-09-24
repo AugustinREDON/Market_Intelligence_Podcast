@@ -7,7 +7,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from config import MP3_RETENTION_DAYS
+from config import (
+    DRIVE_MAIN_FOLDER_ID,
+    DRIVE_EPISODES_FOLDER_ID,
+    MP3_RETENTION_DAYS,
+)
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -16,6 +20,7 @@ CREDENTIALS_FILE = PROJECT_DIR / "credentials.json"
 TOKEN_FILE = PROJECT_DIR / "token.json"
 
 DRIVE_FOLDER_NAME = "Market Intelligence Podcast"
+EPISODES_FOLDER_NAME = "Episodes"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file"
@@ -147,37 +152,14 @@ def cleanup_old_drive_episodes():
         credentials=creds,
     )
 
-    # Find the main Market Intelligence Podcast folder
-    query = (
-        f"name = '{DRIVE_FOLDER_NAME}' "
-        "and mimeType = 'application/vnd.google-apps.folder' "
-        "and trashed = false"
-    )
+    episodes_folder_id = DRIVE_EPISODES_FOLDER_ID
 
-    results = (
-        drive_service.files()
-        .list(
-            q=query,
-            spaces="drive",
-            fields="files(id,name)",
-        )
-        .execute()
-    )
-
-    folders = results.get("files", [])
-
-    if not folders:
-        print("Drive podcast folder not found.")
-        return
-
-    main_folder_id = folders[0]["id"]
-
-    # Find weekly folders inside the main folder
+    # Find weekly folders inside the Episodes folder
     weekly_results = (
         drive_service.files()
         .list(
             q=(
-                f"'{main_folder_id}' in parents "
+                f"'{episodes_folder_id}' in parents "
                 "and mimeType = 'application/vnd.google-apps.folder' "
                 "and trashed = false"
             ),
@@ -300,19 +282,15 @@ def upload_episode(episode_path):
         credentials=creds,
     )
 
-    # Main folder:
-    # My Drive / Market Intelligence Podcast
-    main_folder_id = get_or_create_folder(
-        drive_service,
-        DRIVE_FOLDER_NAME,
-    )
+    # Permanent Drive folders use stable IDs.
+    episodes_folder_id = DRIVE_EPISODES_FOLDER_ID
 
     # Weekly folder:
-    # My Drive / Market Intelligence Podcast / Week of ...
+    # My Drive / Market Intelligence Podcast / Episodes / Week of ...
     week_folder_id = get_or_create_folder(
         drive_service,
         week_folder_name,
-        parent_id=main_folder_id,
+        parent_id=episodes_folder_id,
     )
 
     file_metadata = {

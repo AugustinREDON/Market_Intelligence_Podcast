@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from drive_upload import upload_episode, cleanup_old_drive_episodes
 from config  import MP3_BITRATE, MP3_RETENTION_DAYS
+from script_ingestion import fetch_today_script
 
 
 # -----------------------------
@@ -17,7 +18,7 @@ GENERATE_EPISODE = PROJECT_DIR / "generate_episode.py"
 
 
 # -----------------------------
-# FIND LATEST SCRIPT
+# FIND LATEST SCRIPT -- UNUSED FOR NOW, REPLACED BY fetch_today_script()
 # -----------------------------
 
 def find_latest_script():
@@ -194,12 +195,13 @@ def cleanup_old_mp3s():
 # -----------------------------
 
 def main():
+
     print("=" * 50)
     print("MARKET INTELLIGENCE PODCAST PIPELINE")
     print("=" * 50)
 
-    latest_script = find_latest_script()
-    episode_path = generate_episode(latest_script)
+    script_path = fetch_today_script()
+    episode_path = generate_episode(script_path)
 
     mp3_path = convert_to_mp3(episode_path)
 
