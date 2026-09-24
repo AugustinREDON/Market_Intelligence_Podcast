@@ -9,4 +9,4 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 cd "$PROJECT_DIR"
 
-"$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/run_pipeline.py"
+/usr/bin/caffeinate -di "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/run_pipeline.py"
