@@ -1,23 +1,42 @@
+import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+PROJECT_DIR = Path(__file__).resolve().parent
+
+# Load machine-specific configuration from the local .env file.
+load_dotenv(PROJECT_DIR / ".env")
+
+
+def require_env(name):
+    value = os.getenv(name)
+
+    if not value:
+        raise RuntimeError(
+            f"Missing required environment variable: {name}"
+        )
+
+    return value
+
+
 VOICE_MAP = {
-    "HOST_A": "voices/Daniel_Mercer/DanielMercer.wav",
-    "HOST_B": "voices/Maya_Brooks/MayaBrooks.wav",
+    "HOST_A": require_env("HOST_A_VOICE_PATH"),
+    "HOST_B": require_env("HOST_B_VOICE_PATH"),
 }
 
-DRIVE_SCRIPTS_DIR = (
-    Path.home()
-    / "Library"
-    / "CloudStorage"
-    / "GoogleDrive-augustin.redon@gmail.com"
-    / "My Drive"
-    / "Market Intelligence Podcast"
-    / "Scripts"
+DRIVE_SCRIPTS_DIR = Path(
+    require_env("DRIVE_SCRIPTS_DIR")
+).expanduser()
+
+DRIVE_MAIN_FOLDER_ID = require_env(
+    "DRIVE_MAIN_FOLDER_ID"
 )
 
-DRIVE_MAIN_FOLDER_ID = "1_tLQxIQs_LBNDFYzu42o4n2A0SWpaAe4"
-
-DRIVE_EPISODES_FOLDER_ID = "1M9YDC0gdOHwmuAPPhMme3a9B9ikInfqo"
+DRIVE_EPISODES_FOLDER_ID = require_env(
+    "DRIVE_EPISODES_FOLDER_ID"
+)
 
 CLIPS_DIR = "clips"
 EPISODES_DIR = "episodes"

@@ -1,8 +1,13 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Google OAuth credentials
 credentials.json
 token.json
 
-# Python virtual environment
+# Python virtual environments
 .venv/
 .venv-old/
 
@@ -13,18 +18,16 @@ __pycache__/
 # macOS
 .DS_Store
 
-# Generated podcast files
+# Generated runtime data
 clips/
 episodes/
 logs/
+scripts/
 
 # Local voice reference files
 voices/
 
-# Generated scripts
-scripts/
-
-# Audio / test outputs
+# Audio testing artifacts
 Audio Tests/
 *.wav
 *.mp3
