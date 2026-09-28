@@ -14,7 +14,7 @@ flowchart TD
     F -->|"Google Drive API"| G["Google Drive<br/>Episodes by week"]
 ```
 
-The Mac is scheduled to wake at **6:25 AM on weekdays**. At **6:30 AM**, a `launchd` job starts `run_daily.sh`, which keeps the Mac awake during the run. The Python pipeline retrieves that day’s script from the Google Drive desktop sync folder, validates the `HOST_A:` and `HOST_B:` dialogue, generates speech with local voice references, assembles the audio, converts it to MP3, and uploads it to Google Drive.
+The Mac is scheduled to wake at **6:00 AM on weekdays**. At **6:30 AM**, a `launchd` job starts `run_daily.sh`, which keeps the Mac awake during the run. The Python pipeline retrieves that day’s script from the Google Drive desktop sync folder, validates the `HOST_A:` and `HOST_B:` dialogue, generates speech with local voice references, assembles the audio, converts it to MP3, and uploads it to Google Drive.
 
 ## What’s in this repository
 
@@ -45,8 +45,11 @@ This setup currently targets **Apple Silicon Macs**. It requires Python 3.11, FF
 
 The expected input is a daily `MIP_script_YYYY-MM-DD.md` file containing lines prefixed with `HOST_A:` or `HOST_B:`. Generated clips, scripts, logs, voices, and episodes are local runtime files and are excluded from Git. The pipeline uploads the finished MP3, removes its local WAV, and cleans up older episodes.
 
-## Current scope and next step
+## Current scope and what’s next
 
-The scheduled research workflow lives outside this repository. Audio generation currently depends on a running Mac, Google Drive desktop sync, and private voice reference files. Credentials, tokens, `.env`, and voice files are not distributed.
+The scheduled market research and script-writing workflow lives outside this repository. Audio generation currently depends on a running Mac, Google Drive desktop sync, and private voice reference files. Credentials, tokens, `.env`, and voice files are not distributed.
 
-**Next: move the audio pipeline to a cloud-hosted environment** so scheduled episode generation and delivery no longer depend on a personal Mac. That migration will require a replacement for desktop sync and macOS scheduling, along with cloud-compatible TTS execution, secure storage for credentials, and run monitoring.
+The next priorities are:
+
+1. **Move audio production to the cloud** so scheduled episode generation and delivery no longer depend on a personal Mac. This will require cloud-compatible TTS, a new way to retrieve scripts, secure credential storage, and run monitoring.
+2. **Improve script quality** in the upstream workflow. In particular, make daily episodes sound less formulaic by varying openings, transitions, phrasing, and story structure while keeping the market coverage clear and consistent.
