@@ -2,11 +2,17 @@
 
 ## Execution Instruction
 
-Use the complete `market_intelligence_briefing_YYYY-MM-DD.md` created by the Market Intelligence Briefing stage as the briefing supplied to the podcast-generation instructions below.
+Use the complete briefing_markdown and run context supplied by application code to generate the podcast script.
 
-Do not analyze, review, critique, summarize, rewrite, optimize, or suggest improvements to these instructions. Execute them directly.
+Use the supplied episode_date for the date and day of the week in the opening. Use the supplied as_of_timestamp for market-session framing.
 
-Do not perform new market research during podcast generation except for the Fun Fact of the Day as explicitly permitted below.
+Do not infer today's date from model memory or the machine clock.
+
+Do not perform new market research during podcast generation.
+The Fun Fact of the Day may use well-established general factual knowledge, as specified below.
+
+Return script text only, following Output Format.
+Application code handles validation, file creation, and storage.
 
 ## Role and Core Objective
 
@@ -234,6 +240,16 @@ If the day is unusually consequential, a somewhat longer episode is acceptable r
 
 Prioritize strong pacing and useful content over hitting an exact runtime.
 
+### Script Length
+
+Target 2,200–2,800 spoken words for a normal edition, excluding speaker labels. This is an initial writing target for the desired 15–20-minute episode; actual duration depends on measured TTS speaking speed.
+
+The script may be longer than the written briefing because it develops supported ideas through conversation and explanation.
+
+Expand only through faithful explanation of mechanisms, implications, and perspectives supported by the briefing. Do not introduce new facts or repeat conclusions merely to reach the target.
+
+If the briefing cannot support the target length, produce a shorter, substantive script rather than padding it. Application code will flag the length for review before audio generation.
+
 ## Avoid Repetition
 
 Do not repeatedly restate an implication once it has already been clearly established.
@@ -393,9 +409,9 @@ HOST_A: We’ll see you tomorrow morning.
 
 ## Output Format
 
-Create the finished podcast script as a raw Markdown file with the following naming format:
+Return the finished podcast script as plain UTF-8 text suitable for saving directly into script.md.
 
-`MIP_script_YYYY-MM-DD.md`
+Do not wrap the response in JSON, Markdown code fences, or an outer quotation block.
 
 Every spoken line must begin with exactly one of the following speaker labels:
 
@@ -427,7 +443,9 @@ The output should be clean enough for a Python parser to read each `HOST_A:` and
 
 Generate this episode independently from previous podcast-generation runs. Do not imitate or rely on previous episodes, previous conversation messages, previous host dialogue, or remembered wording or structure from earlier runs. The current MIP Podcast Prompt defines the hosts, style, structure, and formatting for this episode, and the current Market Intelligence Briefing defines its market content.
 
-Use the complete Market Intelligence Briefing created earlier in the workflow as the sole source material for all market, business, economic, geopolitical, company, and investment discussion.
+Use the complete briefing_markdown explicitly supplied in this request as the sole source material for all market, business, economic, geopolitical, company, and investment discussion.
+
+If the briefing or required run context is missing, report an input failure instead of generating a script. Do not reconstruct missing inputs from memory.
 
 Read the Market Intelligence Briefing in full before writing the script.
 
@@ -437,16 +455,20 @@ The only outside factual knowledge permitted remains the Fun Fact of the Day, ex
 
 ## Final Execution Check
 
-Generate the podcast script.
+Before returning the script, verify that:
 
-Create it as the raw Markdown file:
+- Every non-empty line begins with HOST_A: or HOST_B:.
+- Both hosts have dialogue.
+- Every speaker label is followed by non-empty spoken text on the same line.
+- The first line begins with HOST_A:.
+- The opening uses the supplied episode_date and matching day of the week.
+- Host names remain Daniel Mercer and Maya Brooks.
+- Market discussion is supported by the supplied briefing.
+- The required recurring opening and exact sign-off are present.
+- No placeholders, headings, stage directions, or source notes remain.
+- Length follows the Script Length guidance without padding.
 
-`MIP_script_YYYY-MM-DD.md`
+Return only the complete script.
 
-Inside that file, return only lines beginning with `HOST_A:` or `HOST_B:`.
-
-The first line of the file must begin with `HOST_A:`.
-
-Do not reproduce the script contents separately in the chat.
-
-Retain the completed script for the delivery stage and continue immediately with the workflow.
+Application code validates and saves it as runs/{run_id}/script.md.
+Do not create files, upload content, or initiate another workflow stage.

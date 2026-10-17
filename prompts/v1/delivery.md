@@ -1,147 +1,174 @@
-# Google Drive Delivery
+# Market Intelligence Podcast — Cloud Delivery Specification
 
-Execute these instructions after the Market Intelligence Briefing and Podcast Script stages have been completed.
+## Purpose
 
-There must be exactly three generated daily output files:
+Define how application code validates and stores generated text, hands it to the audio workflow, and publishes completed episodes.
 
-- `market_intelligence_briefing_YYYY-MM-DD.md`
-- `carry_forward_topics_YYYY-MM-DD.json`
-- `MIP_script_YYYY-MM-DD.md`
+Application code performs all storage operations through AWS APIs. AI responses provide content only; they do not prove that files exist or uploads succeeded.
 
-All three files must be delivered inside the connected Google Drive folder named exactly:
+## Configuration
 
-`Market Intelligence Podcast`
+Application code receives the private S3 bucket name through deployment configuration.
 
-Use the following destination folders:
+Use the validated run context and episode manifest to determine object keys. Do not accept arbitrary storage destinations from model output.
 
-| File | Destination folder |
-| --- | --- |
-| `market_intelligence_briefing_YYYY-MM-DD.md` | `Market Intelligence Podcast/Briefings` |
-| `carry_forward_topics_YYYY-MM-DD.json` | `Market Intelligence Podcast/Carry Forward` |
-| `MIP_script_YYYY-MM-DD.md` | `Market Intelligence Podcast/Scripts` |
+Keep credentials out of prompts, manifests, generated files, and logs.
+Use scoped IAM roles for AWS access.
 
-## File Handling Requirements
+## Text Outputs
 
-Before calling any Google Drive upload or update action, write each completed output to an actual runtime file using these exact absolute paths:
+Each completed text run produces three content files:
 
-- `/mnt/data/market_intelligence_briefing_YYYY-MM-DD.md`
-- `/mnt/data/carry_forward_topics_YYYY-MM-DD.json`
-- `/mnt/data/MIP_script_YYYY-MM-DD.md`
+| Content | S3 object key | Content type |
+| --- | --- | --- |
+| Complete briefing | runs/{run_id}/briefing.md | text/markdown; charset=utf-8 |
+| Carry-forward state | runs/{run_id}/carry_forward.json | application/json |
+| Podcast script | runs/{run_id}/script.md | text/markdown; charset=utf-8 |
 
-Replace `YYYY-MM-DD` with the current U.S. Eastern date.
+Serialize the carry-forward object as JSON.
+Store the briefing and script as UTF-8 text without outer code fences.
 
-The contents must be the complete final outputs produced by the briefing and podcast stages, not placeholders, chat-only text, or code-fenced copies.
+## Validation Before Upload
 
-Verify that all three runtime files:
+Validate that:
 
-- exist;
-- are non-empty;
-- have the required extensions; and
-- contain the expected complete content.
+- The run context satisfies its supported schema.
+- The intended object keys match the run context.
+- Required outputs are present and non-empty.
+- The briefing identifies the supplied edition date and research cutoff.
+- Carry-forward state is valid JSON with the expected fields and values.
+- Carry-forward dates match the run context.
+- Every non-empty script line uses HOST_A: or HOST_B:.
+- Both hosts have non-empty dialogue.
+- The script opening matches the edition date and host identities.
+- The required opening and sign-off are present.
+- The script satisfies the configured length policy.
 
-Treat the runtime-produced file reference for each verified file as the authoritative upload input.
+A script outside the normal word-count range must be flagged.
+It must not silently proceed to audio generation; application code must apply an explicit acceptance or regeneration policy.
 
-## Destination and Existing-File Handling
+Structural validation does not establish factual accuracy.
+Research and editorial checks remain required.
 
-For each generated file, use only its designated Google Drive destination folder.
+## Upload and Verification
 
-### Market Intelligence Briefing
+Upload validated content to its exact run-specific keys.
 
-Destination:
+Verify successful storage using object size and a content checksum.
+Do not assume an S3 ETag is always a content checksum.
 
-`Market Intelligence Podcast/Briefings`
+Do not mark text delivery complete until all three objects have been uploaded and verified.
 
-Search only inside this folder for an exact same-name file:
+Keep generated text private. It is not website content by default.
 
-`market_intelligence_briefing_YYYY-MM-DD.md`
+## Manifest and Audio Handoff
 
-If an exact same-name file exists, update that Drive file in place using the verified runtime file as the replacement input.
+After all three text objects have been verified:
 
-If no exact same-name file exists, upload the verified runtime file as a new raw file to this folder.
+1. Build the episode manifest using application-controlled values.
+2. Validate it with the manifest validator.
+3. Save and verify it at runs/{run_id}/manifest.json.
+4. Preserve the accepted carry-forward state in durable state storage.
+5. Mark the text stage complete.
+6. Submit the bucket and exact manifest key to the audio workflow.
 
-### Carry-Forward Topics
+Use the manifest's exact script and voice keys for audio generation.
+Do not search for whichever file happens to be latest.
 
-Destination:
+The manifest is an audio-job input, not evidence of publication.
 
-`Market Intelligence Podcast/Carry Forward`
+## Retries and Duplicate Prevention
 
-Search only inside this folder for an exact same-name file:
+Reuse the same run_id and selected inputs when retrying a run.
 
-`carry_forward_topics_YYYY-MM-DD.json`
+Reuse verified checkpoints rather than regenerating completed content or repeating completed audio work.
 
-If an exact same-name file exists, update that Drive file in place using the verified runtime file as the replacement input.
+Do not overwrite accepted run inputs with different content under the same run_id. A deliberate regeneration uses a new run_id.
 
-If no exact same-name file exists, upload the verified runtime file as a new raw file to this folder.
+Application code must coordinate concurrent workers and publication attempts. Predictable object names alone do not prevent duplicate jobs.
 
-### Podcast Script
+If an episode is already successfully published, a retry must recognize that completion and avoid publishing it again.
 
-Destination:
+Replacing a published edition requires an explicit replacement process.
 
-`Market Intelligence Podcast/Scripts`
+## Durable Carry-Forward State
 
-Search only inside this folder for an exact same-name file:
+Preserve accepted carry-forward state outside expiring run folders.
 
-`MIP_script_YYYY-MM-DD.md`
+Record its edition date and originating run_id.
 
-If an exact same-name file exists, update that Drive file in place using the verified runtime file as the replacement input.
+Select only accepted state dated strictly before the next episode_date.
+Weekends, holidays, and missed runs may create gaps.
 
-If no exact same-name file exists, upload the verified runtime file as a new raw file to this folder.
+Do not replace newer accepted state with an older run's state.
+Coordinate concurrent updates so the accepted state remains consistent.
 
-## Google Drive Upload Requirements
+Audio failure does not invalidate successfully completed text outputs.
 
-When calling a Google Drive upload or update action, pass the actual runtime file reference or absolute runtime path in the action's file input (`file_uri`).
+## Audio Upload and Publication
 
-Do not pass merely:
+The audio workflow must:
 
-- the filename;
-- generated text;
-- a chat attachment link;
-- a `sandbox:` link;
-- a Google Drive URL; or
-- an invented file-reference object.
+1. Retrieve and validate the manifest and required assets.
+2. Generate the audio using the specified voices.
+3. Assemble and normalize the audio.
+4. Produce the 192 kbps MP3.
+5. Verify that the MP3 is non-empty, decodable, and has a valid duration.
+6. Upload it to the manifest's audio_key.
+7. Verify the uploaded audio's size and checksum.
+8. Publish metadata to the manifest's metadata_key only after audio verification succeeds.
 
-Perform and verify the three Google Drive actions one file at a time.
+Episode metadata must identify:
 
-A successful file-generation step does not count as a successful Google Drive upload.
+- edition date;
+- originating run_id;
+- publication timestamp;
+- availability expiry timestamp;
+- audio object key;
+- audio duration in seconds;
+- audio size in bytes;
+- content checksum.
 
-Do not consider delivery complete until all three destination actions have been successfully completed.
+Only successfully published metadata may make an episode visible on the website.
 
-## File Format Requirements
+Failed or partial audio uploads must not create a visible episode.
 
-Upload the files as their raw file types.
+## Retention and Public Access
 
-Preserve the `.md` and `.json` extensions exactly.
+Keep the S3 bucket private.
+Expose only intended website assets through CloudFront.
 
-Do not convert the Markdown files into native Google Docs.
+Separate permanent assets and durable state from expiring outputs:
 
-Do not convert the JSON file into another format.
+- assets/prompts/: versioned instructions.
+- assets/voices/: versioned voice references.
+- Model assets: separately managed permanent storage.
+- Durable carry-forward state: separately managed state storage.
+- runs/: generated text and run-specific files.
+- published/: finished audio and episode metadata.
 
-The podcast script must be an actual `.md` file, not merely Markdown text displayed in the chat.
+Application and delivery logic must enforce the configured 14-day availability window for listings, playback, and direct downloads.
 
-If a file with the same exact name already exists for the current date in its designated destination folder, replace or update that file rather than intentionally creating a duplicate same-day version.
+Do not rely solely on S3 lifecycle deletion, which is asynchronous.
+Ensure cached delivery cannot extend access beyond the availability window.
 
-Do not upload scratch work, research notes, temporary files, prompt text, or other intermediate files.
+Retention rules must not delete prompts, voices, model assets, or required carry-forward state.
 
-Only upload the three daily output files listed above.
+## Failure Reporting
 
-Do not upload any of the three daily output files directly into the root Market Intelligence Podcast folder.
+Record:
 
-Do not upload these files to the Episodes, Prompts, or Archive folders.
+- run_id;
+- failed stage or operation;
+- affected object key when applicable;
+- actionable error details;
+- which checkpoints completed successfully.
 
-Do not claim an upload succeeded unless the Google Drive action actually succeeded.
+Do not log credentials or secret values.
 
-## Completion Response
+Do not claim an upload or publication succeeded without verification.
+Leave failed runs recoverable from validated checkpoints.
 
-If all three uploads succeed, return only a concise confirmation listing the three filenames and their destination folders.
+An individual failure must not disable the weekday schedule.
 
-Do not reproduce the briefing, carry-forward JSON, or podcast script contents in the chat.
-
-If any Google Drive upload fails, state clearly:
-
-- which file failed;
-- which destination folder was being used; and
-- whether the other files uploaded successfully.
-
-Provide the generated file as a chat attachment if possible so the failure can be recovered manually.
-
-Do not disable or modify the recurring scheduled task because of an individual delivery failure.
+Compute shutdown and maximum-runtime safeguards must operate even when generation, upload, or publication fails.
