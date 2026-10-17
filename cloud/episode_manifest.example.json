@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "episode_date": "2026-10-16",
+  "timezone": "America/Toronto",
+  "run_id": "2026-10-16-001",
+  "prompt_version": "v1",
+  "inputs": {
+    "briefing_key": "runs/2026-10-16-001/briefing.md",
+    "script_key": "runs/2026-10-16-001/script.md",
+    "carry_forward_key": "runs/2026-10-16-001/carry_forward.json"
+  },
+  "voices": {
+    "HOST_A": "assets/voices/v1/host_a.wav",
+    "HOST_B": "assets/voices/v1/host_b.wav"
+  },
+  "outputs": {
+    "audio_key": "published/2026-10-16/episode.mp3",
+    "metadata_key": "published/2026-10-16/episode.json"
+  }
+}
