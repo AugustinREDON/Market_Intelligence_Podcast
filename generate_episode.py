@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime
 from chatterbox.tts import ChatterboxTTS
 
-from config import (
+from audio_config import (
     VOICE_MAP,
     CLIPS_DIR,
     EPISODES_DIR,

@@ -1,30 +1,18 @@
-import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from audio_config import (
+    PROJECT_DIR,
+    require_env,
+    VOICE_MAP,
+    CLIPS_DIR,
+    EPISODES_DIR,
+    LOGS_DIR,
+    PAUSE_SECONDS,
+    DEVICE,
+    MP3_BITRATE,
+    MP3_RETENTION_DAYS,
+)
 
-
-PROJECT_DIR = Path(__file__).resolve().parent
-
-# Load machine-specific configuration from the local .env file.
-load_dotenv(PROJECT_DIR / ".env")
-
-
-def require_env(name):
-    value = os.getenv(name)
-
-    if not value:
-        raise RuntimeError(
-            f"Missing required environment variable: {name}"
-        )
-
-    return value
-
-
-VOICE_MAP = {
-    "HOST_A": require_env("HOST_A_VOICE_PATH"),
-    "HOST_B": require_env("HOST_B_VOICE_PATH"),
-}
 
 DRIVE_SCRIPTS_DIR = Path(
     require_env("DRIVE_SCRIPTS_DIR")
@@ -38,18 +26,5 @@ DRIVE_EPISODES_FOLDER_ID = require_env(
     "DRIVE_EPISODES_FOLDER_ID"
 )
 
-CLIPS_DIR = "clips"
-EPISODES_DIR = "episodes"
-LOGS_DIR = "logs"
-
-PAUSE_SECONDS = 0
-
-DEVICE = "mps"
-
-MP3_BITRATE = "192k"
-
-MP3_RETENTION_DAYS = 14
-
-# Google Drive script ingestion.
 SCRIPT_WAIT_TIMEOUT_SECONDS = 600
 SCRIPT_RETRY_INTERVAL_SECONDS = 15
