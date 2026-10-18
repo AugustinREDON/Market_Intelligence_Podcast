@@ -2,7 +2,10 @@ import copy
 import json
 import unittest
 
-from cloud.output_validation import validate_briefing_response
+from cloud.output_validation import (
+    validate_briefing_response,
+    validate_script_response,
+)
 
 
 RUN_CONTEXT = {
@@ -110,6 +113,66 @@ class BriefingValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.validate()
 
+class ScriptValidationTests(unittest.TestCase):
+    def test_valid_dialogue(self):
+        script = "HOST_A: Good morning.\nHOST_B: Welcome back."
+        result = validate_script_response(script)
+
+        self.assertEqual(result["script"], script)
+        self.assertEqual(result["spoken_word_count"], 4)
+        self.assertEqual(result["dialogue_line_count"], 2)
+        self.assertFalse(result["within_word_target"])
+
+    def test_blank_lines_allowed(self):
+        script = "\nHOST_A: Hello.\n\nHOST_B: Welcome.\n"
+        result = validate_script_response(script)
+
+        self.assertEqual(result["dialogue_line_count"], 2)
+
+    def test_consecutive_same_host_allowed(self):
+        script = (
+            "HOST_A: Hello.\n"
+            "HOST_A: Here is today's news.\n"
+            "HOST_B: Let's begin."
+        )
+        result = validate_script_response(script)
+
+        self.assertEqual(result["dialogue_line_count"], 3)
+
+    def test_invalid_scripts_rejected(self):
+        invalid_scripts = {
+            "empty": "",
+            "whitespace": "   \n",
+            "wrong_type": None,
+            "missing_label": "Hello.\nHOST_B: Welcome.",
+            "unknown_host": "HOST_A: Hello.\nHOST_C: Welcome.",
+            "empty_dialogue": "HOST_A:   \nHOST_B: Welcome.",
+            "wrong_first_host": "HOST_B: Hello.\nHOST_A: Welcome.",
+            "missing_second_host": "HOST_A: Hello.",
+            "heading": "# Podcast\nHOST_A: Hello.\nHOST_B: Welcome.",
+            "code_fence": "```\nHOST_A: Hello.\nHOST_B: Welcome.\n```",
+        }
+
+        for name, script in invalid_scripts.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    validate_script_response(script)
+
+    def test_word_target_boundaries(self):
+        for word_count, expected in (
+            (2199, False),
+            (2200, True),
+            (2800, True),
+            (2801, False),
+        ):
+            with self.subTest(word_count=word_count):
+                host_a_words = " ".join(["word"] * (word_count - 1))
+                script = f"HOST_A: {host_a_words}\nHOST_B: word"
+
+                result = validate_script_response(script)
+
+                self.assertEqual(result["spoken_word_count"], word_count)
+                self.assertEqual(result["within_word_target"], expected)
 
 if __name__ == "__main__":
     unittest.main()

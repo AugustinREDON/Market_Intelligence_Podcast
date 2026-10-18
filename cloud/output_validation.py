@@ -105,3 +105,55 @@ def validate_briefing_response(raw_response, run_context):
             )
 
     return response
+
+
+def validate_script_response(raw_response):
+    """Validate host-labelled dialogue and report its word count.
+
+    Returns the script and length information, or raises ValueError.
+    """
+    _require_nonempty_string(raw_response, "Script response")
+
+    script = raw_response.strip()
+    speakers = set()
+    spoken_word_count = 0
+    dialogue_line_count = 0
+
+    for line_number, line in enumerate(script.splitlines(), start=1):
+        line = line.strip()
+
+        # Blank lines between dialogue turns are allowed.
+        if not line:
+            continue
+
+        speaker, separator, dialogue = line.partition(":")
+
+        if not separator or speaker not in {"HOST_A", "HOST_B"}:
+            raise ValueError(
+                f"Script line {line_number} must start with "
+                "HOST_A: or HOST_B:"
+            )
+
+        if not dialogue.strip():
+            raise ValueError(
+                f"Script line {line_number} contains empty dialogue"
+            )
+
+        if dialogue_line_count == 0 and speaker != "HOST_A":
+            raise ValueError("The first script line must use HOST_A:")
+
+        speakers.add(speaker)
+        spoken_word_count += len(dialogue.split())
+        dialogue_line_count += 1
+
+    if speakers != {"HOST_A", "HOST_B"}:
+        raise ValueError("The script must include both hosts")
+
+    within_target = 2200 <= spoken_word_count <= 2800
+
+    return {
+        "script": script,
+        "spoken_word_count": spoken_word_count,
+        "dialogue_line_count": dialogue_line_count,
+        "within_word_target": within_target,
+    }
