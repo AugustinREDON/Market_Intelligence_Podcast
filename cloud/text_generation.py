@@ -5,6 +5,7 @@ Importing this module does not make an API request.
 """
 
 import json
+import os
 from datetime import datetime
 
 from openai import OpenAI
@@ -56,11 +57,60 @@ BRIEFING_SCHEMA = {
 
 
 def create_client():
-    """Use environment credentials; disable automatic SDK retries."""
-    return OpenAI(
+    """Use Secrets Manager when configured; otherwise use local credentials."""
+    from time import perf_counter
+
+    started = perf_counter()
+
+    def log_stage(message):
+        elapsed = perf_counter() - started
+        print(f"[create_client] {elapsed:.2f}s: {message}", flush=True)
+
+    secret_id = os.environ.get("OPENAI_SECRET_ID")
+
+    if secret_id:
+        log_stage("Importing boto3")
+        import boto3
+        log_stage("boto3 imported")
+
+        log_stage("Creating Secrets Manager client")
+        secrets_client = boto3.client(
+            "secretsmanager",
+            region_name=os.environ.get("AWS_REGION", "us-east-2"),
+        )
+        log_stage("Secrets Manager client created")
+
+        log_stage("Retrieving secret")
+        response = secrets_client.get_secret_value(SecretId=secret_id)
+        log_stage("Secret retrieved")
+
+        try:
+            secret = json.loads(response["SecretString"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError(
+                "OpenAI secret must contain valid JSON"
+            ) from None
+
+        api_key = (
+            secret.get("OPENAI_API_KEY")
+            if isinstance(secret, dict)
+            else None
+        )
+    else:
+        api_key = os.environ.get("OPENAI_API_KEY")
+
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("A non-empty OPENAI_API_KEY is required")
+
+    log_stage("Creating OpenAI client")
+    client = OpenAI(
+        api_key=api_key,
         max_retries=0,
         timeout=60.0,
     )
+    log_stage("OpenAI client created")
+
+    return client
 
 
 def _validate_prior_state(prior_carry_forward, run_context):
