@@ -31,3 +31,6 @@ voices/
 Audio Tests/
 *.wav
 *.mp3
+
+# Local generation outputs and API response evidence
+/local_runs/
