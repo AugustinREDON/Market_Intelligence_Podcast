@@ -15,6 +15,7 @@ CODE_FILES = [
     "cloud/run_context.py",
     "cloud/output_validation.py",
     "cloud/text_generation.py",
+    "cloud/storage.py",
 ]
 
 PROMPT_FILES = [

@@ -6,6 +6,52 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "check_run_storage":
+        from uuid import uuid4
+
+        from cloud.storage import S3RunStorage
+
+        storage = S3RunStorage()
+        run_id = "2026-10-25-999"
+        filename = f"storage_check_{uuid4().hex}.json"
+        payload = {"purpose": "Run storage check"}
+
+        created = storage.preserve_json(run_id, filename, payload)
+
+        if created != "created":
+            raise ValueError("Expected a newly created artifact")
+
+        if storage.read_json(run_id, filename) != payload:
+            raise ValueError("Stored JSON did not match")
+
+        repeated = storage.preserve_json(run_id, filename, payload)
+
+        if repeated != "unchanged":
+            raise ValueError("Expected identical content to be preserved")
+
+        try:
+            storage.preserve_json(
+                run_id,
+                filename,
+                {"purpose": "Different content"},
+            )
+        except ValueError as error:
+            if "refusing to overwrite" not in str(error):
+                raise
+        else:
+            raise ValueError("Different content was not blocked")
+
+        if storage.read_json(run_id, filename) != payload:
+            raise ValueError("Original content was not preserved")
+
+        return {
+            "mode": "storage_check",
+            "status": "run_storage_verified",
+            "run_id": run_id,
+            "filename": filename,
+            "generation_requested": False,
+        }
+
     if event.get("action") == "check_s3_storage":
         import json
         from uuid import uuid4
