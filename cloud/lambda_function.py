@@ -6,6 +6,20 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "prepare_briefing":
+        from cloud.briefing_service import prepare_briefing_run
+
+        if event.get("no_prior_state") is not True:
+            raise ValueError(
+                "This preparation test requires no_prior_state=true"
+            )
+
+        return prepare_briefing_run(
+            run_context=event["run_context"],
+            model=event["model"],
+            prior_carry_forward=None,
+        )
+
     if event.get("action") == "check_run_storage":
         from uuid import uuid4
 

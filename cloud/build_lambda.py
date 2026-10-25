@@ -16,6 +16,7 @@ CODE_FILES = [
     "cloud/output_validation.py",
     "cloud/text_generation.py",
     "cloud/storage.py",
+    "cloud/briefing_service.py",
 ]
 
 PROMPT_FILES = [
