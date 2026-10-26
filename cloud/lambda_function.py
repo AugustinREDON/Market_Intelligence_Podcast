@@ -6,6 +6,26 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "validate_briefing":
+        from cloud.briefing_service import validate_saved_briefing_run
+
+        return validate_saved_briefing_run(
+            run_id=event["run_id"],
+            snapshot_filename=event["snapshot_filename"],
+        )
+
+    if event.get("action") == "retrieve_briefing":
+        from cloud.briefing_service import retrieve_briefing_run
+
+        if context.get_remaining_time_in_millis() < 60_000:
+            raise ValueError(
+                "Insufficient Lambda time remaining for retrieval"
+            )
+
+        return retrieve_briefing_run(
+            run_id=event["run_id"],
+        )
+
     if event.get("action") == "submit_briefing":
         from cloud.briefing_service import submit_prepared_briefing_run
 

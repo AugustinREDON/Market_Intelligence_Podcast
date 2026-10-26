@@ -1,13 +1,16 @@
 """Prepare briefing inputs in S3 without submitting a generation."""
 
 import json
+from uuid import uuid4
 from cloud.prompt_loader import load_prompt_bundle
 from cloud.run_context import validate_run_context
 from cloud.storage import S3RunStorage
 from cloud.text_generation import (
     build_briefing_request,
     create_client,
+    retrieve_briefing,
     submit_briefing,
+    validate_completed_briefing,
 )
 
 
@@ -253,4 +256,172 @@ def submit_prepared_briefing_run(
         "response_id": response_id,
         "response_status": initial_response.get("status"),
         "generation_requested": True,
+    }
+
+def retrieve_briefing_run(
+    *,
+    run_id,
+    storage=None,
+    client_factory=None,
+):
+    """Retrieve an existing generation and preserve a fresh snapshot."""
+    if storage is None:
+        storage = S3RunStorage()
+
+    reference = storage.read_json(run_id, "briefing_response_id.json")
+
+    if not isinstance(reference, dict):
+        raise ValueError("Saved response reference must be an object")
+
+    if reference.get("run_id") != run_id:
+        raise ValueError("Saved response reference has a different run_id")
+
+    response_id = reference.get("response_id")
+    if not isinstance(response_id, str) or not response_id.strip():
+        raise ValueError("Saved response reference has no usable response ID")
+
+    if client_factory is None:
+        client_factory = lambda: create_client(timeout=30.0)
+
+    with client_factory() as client:
+        response = retrieve_briefing(client, response_id)
+
+    snapshot = (
+        response
+        if isinstance(response, dict)
+        else response.model_dump(mode="json")
+    )
+
+    if not isinstance(snapshot, dict):
+        raise ValueError("Retrieved response must be a JSON object")
+
+    # Each retrieval gets its own immutable artifact.
+    filename = f"briefing_response_snapshot_{uuid4().hex}.json"
+    storage.preserve_json(run_id, filename, snapshot)
+
+    # Preserve the evidence before checking the returned response.
+    if snapshot.get("id") != response_id:
+        raise ValueError("Retrieved response ID does not match saved ID")
+
+    response_status = snapshot.get("status")
+    if response_status in {"queued", "in_progress"}:
+        status = "generation_pending"
+    elif response_status == "completed":
+        status = "completed_response_preserved"
+    elif response_status in {"failed", "cancelled", "incomplete"}:
+        status = "generation_unsuccessful"
+    else:
+        raise ValueError(
+            f"Unexpected response status: {response_status}"
+        )
+
+    return {
+        "mode": "briefing_retrieval",
+        "status": status,
+        "run_id": run_id,
+        "response_id": response_id,
+        "response_status": response_status,
+        "snapshot_filename": filename,
+        "generation_requested": False,
+    }
+
+def validate_saved_briefing_run(
+    *,
+    run_id,
+    snapshot_filename,
+    storage=None,
+):
+    """Validate a saved response and extract artifacts without API calls."""
+    if storage is None:
+        storage = S3RunStorage()
+
+    if (
+        not isinstance(snapshot_filename, str)
+        or not snapshot_filename.startswith("briefing_response_snapshot_")
+        or not snapshot_filename.endswith(".json")
+    ):
+        raise ValueError("An explicit response snapshot filename is required")
+
+    inputs = storage.read_json(run_id, "inputs.json")
+    if not isinstance(inputs, dict):
+        raise ValueError("Saved inputs must be an object")
+
+    run_context = validate_run_context(inputs["run_context"])
+    if run_context["run_id"] != run_id:
+        raise ValueError("Saved inputs have a different run_id")
+
+    reference = storage.read_json(run_id, "briefing_response_id.json")
+    if not isinstance(reference, dict):
+        raise ValueError("Saved response reference must be an object")
+
+    response_id = reference.get("response_id")
+    if (
+        reference.get("run_id") != run_id
+        or not isinstance(response_id, str)
+        or not response_id.strip()
+    ):
+        raise ValueError("Invalid saved response reference")
+
+    snapshot = storage.read_json(run_id, snapshot_filename)
+    if not isinstance(snapshot, dict):
+        raise ValueError("Saved snapshot must be an object")
+
+    if snapshot.get("id") != response_id:
+        raise ValueError("Snapshot response ID does not match saved ID")
+
+    if snapshot.get("model") != inputs["model"]:
+        raise ValueError("Snapshot model does not match saved inputs")
+
+    # Validate everything before writing extracted artifacts.
+    result = validate_completed_briefing(snapshot, run_context)
+    briefing = result["briefing"]
+
+    artifacts = {}
+    artifacts["briefing.md"] = storage.preserve_text(
+        run_id,
+        "briefing.md",
+        briefing["briefing_markdown"],
+        content_type="text/markdown; charset=utf-8",
+    )
+    artifacts["carry_forward.json"] = storage.preserve_json(
+        run_id,
+        "carry_forward.json",
+        briefing["carry_forward"],
+    )
+    artifacts["briefing_sources.json"] = storage.preserve_json(
+        run_id,
+        "briefing_sources.json",
+        result["sources"],
+    )
+    artifacts["briefing_usage.json"] = storage.preserve_json(
+        run_id,
+        "briefing_usage.json",
+        {
+            "response_id": response_id,
+            "model": result["model"],
+            "usage": result["usage"],
+        },
+    )
+
+    # Write this last so it marks successful extraction of all artifacts.
+    artifacts["briefing_validation.json"] = storage.preserve_json(
+        run_id,
+        "briefing_validation.json",
+        {
+            "run_id": run_id,
+            "response_id": response_id,
+            "status": "validated",
+            "source_count": len(result["sources"]),
+        },
+    )
+
+    return {
+        "mode": "briefing_validation",
+        "status": "briefing_validated_and_preserved",
+        "run_id": run_id,
+        "response_id": response_id,
+        "snapshot_filename": snapshot_filename,
+        "source_count": len(result["sources"]),
+        "artifacts": artifacts,
+        "generation_requested": False,
     }
