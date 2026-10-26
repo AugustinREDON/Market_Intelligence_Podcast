@@ -79,6 +79,38 @@ class StorageTests(unittest.TestCase):
             "Original briefing",
         )
 
+    def test_submission_can_only_be_claimed_once(self):
+        first = self.storage.claim_briefing_submission(self.run_id)
+        second = self.storage.claim_briefing_submission(self.run_id)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+
+        claim = self.storage.read_json(
+            self.run_id,
+            "briefing_submission_claim.json",
+        )
+        self.assertEqual(claim["run_id"], self.run_id)
+        self.assertEqual(claim["status"], "submission_claimed")
+
+    def test_storage_error_does_not_authorize_submission(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.put_object.side_effect = ClientError(
+            {
+                "Error": {"Code": "AccessDenied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "PutObject",
+        )
+        storage = S3RunStorage(
+            bucket="offline-test",
+            client=client,
+        )
+
+        with self.assertRaises(ClientError):
+            storage.claim_briefing_submission(self.run_id)
 
 if __name__ == "__main__":
     unittest.main()

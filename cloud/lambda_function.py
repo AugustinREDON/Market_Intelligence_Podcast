@@ -6,6 +6,30 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "check_submission_claim":
+
+        from cloud.storage import S3RunStorage
+
+        storage = S3RunStorage()
+        run_id = "2026-10-25-997"
+
+        # A unique test artifact keeps this check separate from real runs.
+        # Both attempts below use the same key.
+        first = storage.claim_briefing_submission(run_id)
+        second = storage.claim_briefing_submission(run_id)
+
+        if second is not False:
+            raise ValueError("Duplicate submission claim was not blocked")
+
+        return {
+            "mode": "submission_claim_check",
+            "status": "duplicate_claim_blocked",
+            "run_id": run_id,
+            "first_claim_created": first,
+            "second_claim_created": second,
+            "generation_requested": False,
+        }
+
     if event.get("action") == "prepare_briefing":
         from cloud.briefing_service import prepare_briefing_run
 

@@ -102,3 +102,33 @@ class S3RunStorage:
             content,
             content_type="application/json",
         )
+
+    def claim_briefing_submission(self, run_id):
+        """Claim submission once; an existing claim never grants permission."""
+        key = self._key(run_id, "briefing_submission_claim.json")
+        content = json.dumps({
+            "run_id": run_id,
+            "stage": "briefing",
+            "status": "submission_claimed",
+        }).encode("utf-8")
+
+        try:
+            self.client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=content,
+                ContentType="application/json",
+                IfNoneMatch="*",
+            )
+        except ClientError as error:
+            status = error.response.get(
+                "ResponseMetadata", {}
+            ).get("HTTPStatusCode")
+
+            if status == 412:
+                return False
+
+            # An uncertain storage failure must not authorize submission.
+            raise
+
+        return True
