@@ -56,8 +56,14 @@ BRIEFING_SCHEMA = {
 }
 
 
-def create_client():
-    """Use Secrets Manager when configured; otherwise use local credentials."""
+def create_client(*, timeout=60.0):
+    """Create a client with an explicit timeout and no automatic retries."""
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < timeout <= 60
+    ):
+        raise ValueError("timeout must be greater than 0 and at most 60 seconds")
     from time import perf_counter
 
     started = perf_counter()
@@ -106,7 +112,7 @@ def create_client():
     client = OpenAI(
         api_key=api_key,
         max_retries=0,
-        timeout=60.0,
+        timeout=timeout,
     )
     log_stage("OpenAI client created")
 

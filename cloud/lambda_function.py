@@ -6,6 +6,24 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "submit_briefing":
+        from cloud.briefing_service import submit_prepared_briefing_run
+
+        if event.get("confirm_paid_generation") is not True:
+            raise ValueError(
+                "Submission requires confirm_paid_generation=true"
+            )
+
+        # Leave time for submission and saving the initial response.
+        if context.get_remaining_time_in_millis() < 60_000:
+            raise ValueError(
+                "Insufficient Lambda time remaining for safe submission"
+            )
+
+        return submit_prepared_briefing_run(
+            run_id=event["run_id"],
+        )
+
     if event.get("action") == "check_submission_claim":
 
         from cloud.storage import S3RunStorage
