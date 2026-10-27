@@ -104,11 +104,22 @@ class S3RunStorage:
         )
 
     def claim_briefing_submission(self, run_id):
-        """Claim submission once; an existing claim never grants permission."""
-        key = self._key(run_id, "briefing_submission_claim.json")
+        """Claim briefing submission once."""
+        return self._claim_submission(run_id, stage="briefing")
+
+    def claim_script_submission(self, run_id):
+        """Claim script submission once."""
+        return self._claim_submission(run_id, stage="script")
+
+    def _claim_submission(self, run_id, *, stage):
+        """An existing claim never grants submission permission."""
+        if stage not in {"briefing", "script"}:
+            raise ValueError("Unsupported submission stage")
+
+        key = self._key(run_id, f"{stage}_submission_claim.json")
         content = json.dumps({
             "run_id": run_id,
-            "stage": "briefing",
+            "stage": stage,
             "status": "submission_claimed",
         }).encode("utf-8")
 
@@ -128,7 +139,7 @@ class S3RunStorage:
             if status == 412:
                 return False
 
-            # An uncertain storage failure must not authorize submission.
+            # Uncertain storage failures never authorize submission.
             raise
 
         return True

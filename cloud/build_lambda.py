@@ -17,6 +17,7 @@ CODE_FILES = [
     "cloud/text_generation.py",
     "cloud/storage.py",
     "cloud/briefing_service.py",
+    "cloud/script_service.py",
 ]
 
 PROMPT_FILES = [

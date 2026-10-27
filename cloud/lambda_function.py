@@ -6,6 +6,51 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "retrieve_script":
+        from cloud.script_service import retrieve_script_run
+
+        if context.get_remaining_time_in_millis() < 60_000:
+            raise ValueError(
+                "Insufficient Lambda time remaining for retrieval"
+            )
+
+        return retrieve_script_run(
+            run_id=event["run_id"],
+        )
+
+    if event.get("action") == "validate_script":
+        from cloud.script_service import validate_saved_script_run
+
+        return validate_saved_script_run(
+            run_id=event["run_id"],
+            snapshot_filename=event["snapshot_filename"],
+        )
+
+    if event.get("action") == "submit_script":
+        from cloud.script_service import submit_prepared_script_run
+
+        if event.get("confirm_paid_generation") is not True:
+            raise ValueError(
+                "Submission requires confirm_paid_generation=true"
+            )
+
+        if context.get_remaining_time_in_millis() < 60_000:
+            raise ValueError(
+                "Insufficient Lambda time remaining for safe submission"
+            )
+
+        return submit_prepared_script_run(
+            run_id=event["run_id"],
+        )
+
+    if event.get("action") == "prepare_script":
+        from cloud.script_service import prepare_script_run
+
+        return prepare_script_run(
+            run_id=event["run_id"],
+            model=event["model"],
+        )
+
     if event.get("action") == "validate_briefing":
         from cloud.briefing_service import validate_saved_briefing_run
 

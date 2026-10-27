@@ -112,5 +112,69 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(ClientError):
             storage.claim_briefing_submission(self.run_id)
 
+    def test_script_submission_can_only_be_claimed_once(self):
+        first = self.storage.claim_script_submission(self.run_id)
+        second = self.storage.claim_script_submission(self.run_id)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(
+            self.storage.read_json(
+                self.run_id,
+                "script_submission_claim.json",
+            ),
+            {
+                "run_id": self.run_id,
+                "stage": "script",
+                "status": "submission_claimed",
+            },
+        )
+
+    def test_briefing_and_script_claims_are_independent(self):
+        # Check both possible submission orders.
+        for stages in (
+            ("briefing", "script"),
+            ("script", "briefing"),
+        ):
+            with self.subTest(order=stages):
+                storage = S3RunStorage(
+                    bucket="offline-test",
+                    client=FakeS3(),
+                )
+                claims = {
+                    "briefing": storage.claim_briefing_submission,
+                    "script": storage.claim_script_submission,
+                }
+
+                for stage in stages:
+                    self.assertTrue(claims[stage](self.run_id))
+
+                for stage in stages:
+                    self.assertFalse(claims[stage](self.run_id))
+                    claim = storage.read_json(
+                        self.run_id,
+                        f"{stage}_submission_claim.json",
+                    )
+                    self.assertEqual(claim["stage"], stage)
+
+    def test_script_storage_error_does_not_authorize_submission(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        client.put_object.side_effect = ClientError(
+            {
+                "Error": {"Code": "AccessDenied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "PutObject",
+        )
+        storage = S3RunStorage(
+            bucket="offline-test",
+            client=client,
+        )
+
+        with self.assertRaises(ClientError):
+            storage.claim_script_submission(self.run_id)
+
 if __name__ == "__main__":
     unittest.main()
