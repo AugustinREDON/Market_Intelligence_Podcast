@@ -157,3 +157,15 @@ def validate_script_response(raw_response):
         "dialogue_line_count": dialogue_line_count,
         "within_word_target": within_target,
     }
+
+def validate_script_for_acceptance(raw_response):
+    """Require valid two-host dialogue and a minimum content length."""
+    result = validate_script_response(raw_response)
+
+    if result["spoken_word_count"] < 1000:
+        raise ValueError(
+            "Script acceptance requires at least 1000 spoken words; "
+            f"found {result['spoken_word_count']}"
+        )
+
+    return result

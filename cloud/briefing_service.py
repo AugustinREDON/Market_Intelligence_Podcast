@@ -5,6 +5,7 @@ from uuid import uuid4
 from cloud.prompt_loader import load_prompt_bundle
 from cloud.run_context import validate_run_context
 from cloud.storage import S3RunStorage
+from cloud.acceptance import build_briefing_acceptance
 from cloud.text_generation import (
     build_briefing_request,
     create_client,
@@ -376,6 +377,11 @@ def validate_saved_briefing_run(
     result = validate_completed_briefing(snapshot, run_context)
     briefing = result["briefing"]
 
+    acceptance = build_briefing_acceptance(
+    run_context=run_context,
+    validated_result=result,
+    )
+
     artifacts = {}
     artifacts["briefing.md"] = storage.preserve_text(
         run_id,
@@ -413,6 +419,14 @@ def validate_saved_briefing_run(
             "status": "validated",
             "source_count": len(result["sources"]),
         },
+    )
+
+    # Save acceptance only after all extracted artifacts and the
+    # existing validation marker have been preserved successfully.
+    artifacts["briefing_acceptance.json"] = storage.preserve_json(
+        run_id,
+        "briefing_acceptance.json",
+        acceptance,
     )
 
     return {

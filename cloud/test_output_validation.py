@@ -5,6 +5,7 @@ import unittest
 from cloud.output_validation import (
     validate_briefing_response,
     validate_script_response,
+    validate_script_for_acceptance,
 )
 
 
@@ -173,6 +174,55 @@ class ScriptValidationTests(unittest.TestCase):
 
                 self.assertEqual(result["spoken_word_count"], word_count)
                 self.assertEqual(result["within_word_target"], expected)
+
+class ScriptAcceptanceTests(unittest.TestCase):
+    @staticmethod
+    def make_script(word_count):
+        host_a_words = " ".join(["word"] * (word_count - 1))
+        return f"HOST_A: {host_a_words}\nHOST_B: word"
+
+    def test_below_minimum_rejected(self):
+        with self.assertRaisesRegex(ValueError, "at least 1000"):
+            validate_script_for_acceptance(self.make_script(999))
+
+    def test_minimum_accepted(self):
+        result = validate_script_for_acceptance(self.make_script(1000))
+
+        self.assertEqual(result["spoken_word_count"], 1000)
+        self.assertFalse(result["within_word_target"])
+
+    def test_word_target_is_informational(self):
+        for word_count, within_target in (
+            (2150, False),
+            (2200, True),
+            (2800, True),
+            (2850, False),
+        ):
+            with self.subTest(word_count=word_count):
+                result = validate_script_for_acceptance(
+                    self.make_script(word_count)
+                )
+
+                self.assertEqual(result["spoken_word_count"], word_count)
+                self.assertEqual(
+                    result["within_word_target"], within_target
+                )
+
+    def test_invalid_structure_rejected_despite_sufficient_words(self):
+        words = " ".join(["word"] * 1000)
+        invalid_scripts = {
+            "missing_host_b": f"HOST_A: {words}",
+            "missing_label": f"{words}\nHOST_B: word",
+            "unknown_host": f"HOST_A: {words}\nHOST_C: word",
+            "empty_dialogue": f"HOST_A: {words}\nHOST_B: ",
+            "wrong_first_host": f"HOST_B: {words}\nHOST_A: word",
+        }
+
+        for name, script in invalid_scripts.items():
+            with self.subTest(case=name):
+                with self.assertRaises(ValueError):
+                    validate_script_for_acceptance(script)
+
 
 if __name__ == "__main__":
     unittest.main()

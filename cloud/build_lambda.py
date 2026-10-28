@@ -18,6 +18,7 @@ CODE_FILES = [
     "cloud/storage.py",
     "cloud/briefing_service.py",
     "cloud/script_service.py",
+    "cloud/acceptance.py",
 ]
 
 PROMPT_FILES = [

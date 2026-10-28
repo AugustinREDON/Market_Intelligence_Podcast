@@ -6,7 +6,10 @@ Preparation reads/writes storage but does not contact OpenAI.
 import hashlib
 import json
 from uuid import uuid4
-
+from cloud.acceptance import (
+    build_briefing_acceptance,
+    build_script_acceptance,
+)
 from cloud.output_validation import validate_briefing_response
 from cloud.prompt_loader import load_prompt_bundle
 from cloud.run_context import validate_run_context
@@ -18,8 +21,8 @@ from cloud.text_generation import (
 )
 
 
-def _build_script_artifacts(*, run_id, model, storage=None):
-    """Check briefing artifacts and build expected script inputs/request."""
+def _load_accepted_briefing(*, run_id, storage=None):
+    """Check saved briefing content and acceptance without loading prompts."""
     if storage is None:
         storage = S3RunStorage()
 
@@ -88,6 +91,55 @@ def _build_script_artifacts(*, run_id, model, storage=None):
         ),
         run_context,
     )
+
+    # Require acceptance of the exact saved briefing and carry-forward.
+    sources = storage.read_json(run_id, "briefing_sources.json")
+    acceptance = storage.read_json(
+        run_id, "briefing_acceptance.json"
+    )
+
+    expected_acceptance = build_briefing_acceptance(
+        run_context=run_context,
+        validated_result={
+            "response_id": response_id,
+            "model": inputs.get("model"),
+            "briefing": {
+                "briefing_markdown": briefing_markdown,
+                "carry_forward": carry_forward,
+            },
+            "sources": sources,
+        },
+    )
+
+    if source_count != expected_acceptance["source_count"]:
+        raise ValueError(
+            "Briefing source evidence does not match validation"
+        )
+
+    if acceptance != expected_acceptance:
+        raise ValueError(
+            "Briefing acceptance does not match the saved "
+            "content, identity, or current acceptance policy"
+        )
+
+    return {
+        "run_context": run_context,
+        "response_id": response_id,
+        "briefing_markdown": briefing_markdown,
+        "acceptance": acceptance,
+    }
+
+
+def _build_script_artifacts(*, run_id, model, storage=None):
+    """Build expected script inputs/request from an accepted briefing."""
+    accepted = _load_accepted_briefing(
+        run_id=run_id,
+        storage=storage,
+    )
+    run_context = accepted["run_context"]
+    response_id = accepted["response_id"]
+    briefing_markdown = accepted["briefing_markdown"]
+
 
     bundle = load_prompt_bundle(run_context["prompt_version"])
 
@@ -427,6 +479,18 @@ def validate_saved_script_run(
     # Complete validation before writing any extracted artifacts.
     result = validate_completed_script(snapshot)
 
+    # Recheck the briefing dependency without loading current prompts.
+    accepted_briefing = _load_accepted_briefing(
+        run_id=run_id,
+        storage=storage,
+    )
+
+    acceptance = build_script_acceptance(
+        script_inputs=inputs,
+        validated_result=result,
+        briefing_acceptance=accepted_briefing["acceptance"],
+    )
+
     artifacts = {}
     artifacts["script.md"] = storage.preserve_text(
         run_id,
@@ -444,7 +508,7 @@ def validate_saved_script_run(
         },
     )
 
-    # Write the marker last, after all other artifacts are preserved.
+    # Preserve the original validation evidence before acceptance.
     artifacts["script_validation.json"] = storage.preserve_json(
         run_id,
         "script_validation.json",
@@ -464,6 +528,13 @@ def validate_saved_script_run(
         },
     )
 
+        # Acceptance is saved last, after successful artifact preservation.
+    artifacts["script_acceptance.json"] = storage.preserve_json(
+        run_id,
+        "script_acceptance.json",
+        acceptance,
+    )
+
     return {
         "mode": "script_validation",
         "status": "script_validated_and_preserved",
@@ -473,8 +544,8 @@ def validate_saved_script_run(
         "spoken_word_count": result["spoken_word_count"],
         "dialogue_line_count": result["dialogue_line_count"],
         "within_word_target": result["within_word_target"],
-        "acceptance_status": "requires_editorial_review",
-        "audio_generation_allowed": False,
+        "acceptance_status": "accepted",
+        "audio_generation_allowed": True,
         "artifacts": artifacts,
         "generation_requested": False,
     }

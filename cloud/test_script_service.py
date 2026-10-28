@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 from contextlib import nullcontext
-
+from cloud.acceptance import build_briefing_acceptance
 from cloud.script_service import (
     load_prepared_script_run,
     prepare_script_run,
@@ -40,7 +40,7 @@ class ScriptPreparationTests(unittest.TestCase):
                 "run_id": self.run_id,
                 "response_id": "resp_test",
                 "status": "validated",
-                "source_count": 8,
+                "source_count": 1,
             },
             "briefing.md": self.briefing,
             "carry_forward.json": {
@@ -49,6 +49,28 @@ class ScriptPreparationTests(unittest.TestCase):
                 "topics": [],
             },
         }
+
+        self.files["briefing_sources.json"] = [
+            {
+                "url": "https://example.com/markets",
+                "title": "Offline source",
+                "evidence_type": "consulted_source",
+            }
+        ]
+        self.files["briefing_acceptance.json"] = (
+            build_briefing_acceptance(
+                run_context=self.context,
+                validated_result={
+                    "response_id": "resp_test",
+                    "model": "gpt-6.1-sol",
+                    "briefing": {
+                        "briefing_markdown": self.briefing,
+                        "carry_forward": self.files["carry_forward.json"],
+                    },
+                    "sources": self.files["briefing_sources.json"],
+                },
+            )
+        )
 
         self.storage = Mock()
         self.storage.read_json.side_effect = (
@@ -221,7 +243,7 @@ class ScriptPreparationTests(unittest.TestCase):
         self.prepare()
         self.files["briefing.md"] = "Different briefing content."
 
-        with self.assertRaisesRegex(ValueError, "Saved script inputs"):
+        with self.assertRaisesRegex(ValueError, "Briefing acceptance"):
             load_prepared_script_run(
                 run_id=self.run_id,
                 storage=self.storage,
@@ -535,7 +557,7 @@ class ScriptPreparationTests(unittest.TestCase):
 
         client.responses.create.assert_not_called()
 
-    def make_validation_snapshot(self):
+    def make_validation_snapshot(self, word_count=1000):
         self.prepare()
         self.snapshot_filename = "script_response_snapshot_offline.json"
 
@@ -557,8 +579,9 @@ class ScriptPreparationTests(unittest.TestCase):
                         {
                             "type": "output_text",
                             "text": (
-                                "HOST_A: Welcome to the podcast.\n"
-                                "HOST_B: Let's discuss the markets."
+                                "HOST_A: "
+                                + " ".join(["word"] * (word_count - 1))
+                                + "\nHOST_B: word"
                             ),
                         }
                     ],
@@ -603,8 +626,53 @@ class ScriptPreparationTests(unittest.TestCase):
 
         self.assertEqual(
             self.storage.preserve_json.call_args_list[-1].args[1],
-            "script_validation.json",
+            "script_acceptance.json",
         )
+
+        self.assertEqual(result["acceptance_status"], "accepted")
+        self.assertTrue(result["audio_generation_allowed"])
+
+        acceptance = self.files["script_acceptance.json"]
+        self.assertEqual(acceptance["status"], "accepted")
+        self.assertEqual(acceptance["stage"], "script")
+        self.assertEqual(acceptance["run_id"], self.run_id)
+        self.assertEqual(acceptance["response_id"], "resp_script_test")
+        self.assertEqual(acceptance["model"], "gpt-6.1-sol")
+        self.assertEqual(acceptance["policy_version"], "automatic_v1")
+        self.assertEqual(acceptance["spoken_word_count"], 1000)
+        self.assertFalse(acceptance["within_word_target"])
+        self.assertEqual(
+            acceptance["eligible_uses"], ["audio_generation"]
+        )
+        self.assertEqual(
+            acceptance["script_sha256"],
+            hashlib.sha256(
+                self.files["script.md"].encode("utf-8")
+            ).hexdigest(),
+        )
+
+        for field, value in (
+            ("run_context_sha256", self.context),
+            ("script_inputs_sha256", self.files["script_inputs.json"]),
+            (
+                "briefing_acceptance_sha256",
+                self.files["briefing_acceptance.json"],
+            ),
+        ):
+            with self.subTest(field=field):
+                canonical = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                self.assertEqual(
+                    acceptance[field],
+                    hashlib.sha256(
+                        canonical.encode("utf-8")
+                    ).hexdigest(),
+                )
 
     def test_validation_rejects_wrong_response_identity(self):
         self.make_validation_snapshot()
@@ -672,6 +740,7 @@ class ScriptPreparationTests(unittest.TestCase):
 
         self.assertIn("script.md", self.files)
         self.assertNotIn("script_validation.json", self.files)
+        self.assertNotIn("script_acceptance.json", self.files)
 
         self.storage.preserve_json.side_effect = self.preserve_json
         result = self.validate_snapshot()
@@ -682,6 +751,7 @@ class ScriptPreparationTests(unittest.TestCase):
                 "script.md": "unchanged",
                 "script_usage.json": "created",
                 "script_validation.json": "created",
+                "script_acceptance.json": "created",
             },
         )
 
@@ -698,6 +768,197 @@ class ScriptPreparationTests(unittest.TestCase):
             result["status"],
             "script_validated_and_preserved",
         )
+
+    def test_missing_acceptance_blocks_preparation(self):
+        del self.files["briefing_acceptance.json"]
+
+        with self.assertRaises(KeyError):
+            self.prepare()
+
+        self.storage.preserve_json.assert_not_called()
+
+    def test_mismatched_acceptance_blocks_preparation(self):
+        acceptance = self.files["briefing_acceptance.json"]
+
+        for field, value in (
+            ("run_id", "2026-10-25-001"),
+            ("response_id", "resp_other"),
+            ("model", "other-model"),
+            ("status", "pending"),
+            ("policy_version", "unknown_policy"),
+            ("briefing_sha256", "0" * 64),
+            ("carry_forward_sha256", "0" * 64),
+            ("sources_sha256", "0" * 64),
+            ("run_context_sha256", "0" * 64),
+            ("eligible_uses", []),
+        ):
+            with self.subTest(field=field):
+                original = copy.deepcopy(acceptance[field])
+                acceptance[field] = value
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "Briefing acceptance"
+                    ):
+                        self.prepare()
+                finally:
+                    acceptance[field] = original
+
+        self.storage.preserve_json.assert_not_called()
+
+    def test_changed_dependencies_block_preparation(self):
+        changed_carry_forward = copy.deepcopy(
+            self.files["carry_forward.json"]
+        )
+        changed_carry_forward["topics"] = [
+            {
+                "topic": "Changed topic",
+                "status": "ongoing",
+                "context": "Different continuity content.",
+            }
+        ]
+        changed_sources = copy.deepcopy(
+            self.files["briefing_sources.json"]
+        )
+        changed_sources[0]["url"] = "https://example.com/different"
+
+        for filename, value in (
+            ("briefing.md", "Different briefing content."),
+            ("carry_forward.json", changed_carry_forward),
+            ("briefing_sources.json", changed_sources),
+        ):
+            with self.subTest(filename=filename):
+                original = copy.deepcopy(self.files[filename])
+                self.files[filename] = value
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "Briefing acceptance"
+                    ):
+                        self.prepare()
+                finally:
+                    self.files[filename] = original
+
+        self.storage.preserve_json.assert_not_called()
+
+    def test_submission_rechecks_acceptance_before_client_or_claim(self):
+        client, factory = self.make_submission_client()
+        original = copy.deepcopy(
+            self.files["briefing_acceptance.json"]
+        )
+        mismatched = copy.deepcopy(original)
+        mismatched["briefing_sha256"] = "0" * 64
+
+        for acceptance in (None, mismatched):
+            with self.subTest(missing=acceptance is None):
+                if acceptance is None:
+                    del self.files["briefing_acceptance.json"]
+                else:
+                    self.files["briefing_acceptance.json"] = acceptance
+
+                try:
+                    with self.assertRaises((KeyError, ValueError)):
+                        submit_prepared_script_run(
+                            run_id=self.run_id,
+                            storage=self.storage,
+                            client_factory=factory,
+                        )
+                finally:
+                    self.files["briefing_acceptance.json"] = (
+                        copy.deepcopy(original)
+                    )
+
+        factory.assert_not_called()
+        self.storage.claim_script_submission.assert_not_called()
+        client.responses.create.assert_not_called()
+
+    def test_script_below_minimum_is_not_accepted(self):
+        self.make_validation_snapshot(word_count=999)
+
+        with self.assertRaisesRegex(ValueError, "at least 1000"):
+            self.validate_snapshot()
+
+        self.storage.preserve_text.assert_not_called()
+        self.storage.preserve_json.assert_not_called()
+        self.assertNotIn("script_acceptance.json", self.files)
+
+    def test_script_acceptance_rechecks_saved_briefing_dependency(self):
+        self.make_validation_snapshot()
+        inputs = self.files["script_inputs.json"]
+
+        for field, value in (
+            ("briefing_response_id", "resp_other"),
+            ("briefing_sha256", "0" * 64),
+        ):
+            with self.subTest(field=field):
+                original = inputs[field]
+                inputs[field] = value
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, "Script briefing dependency mismatch"
+                    ):
+                        self.validate_snapshot()
+                finally:
+                    inputs[field] = original
+
+        self.storage.preserve_text.assert_not_called()
+        self.storage.preserve_json.assert_not_called()
+        self.assertNotIn("script_acceptance.json", self.files)
+
+    def test_missing_briefing_acceptance_blocks_script_acceptance(self):
+        self.make_validation_snapshot()
+        del self.files["briefing_acceptance.json"]
+
+        with self.assertRaises(KeyError):
+            self.validate_snapshot()
+
+        self.storage.preserve_text.assert_not_called()
+        self.storage.preserve_json.assert_not_called()
+        self.assertNotIn("script_acceptance.json", self.files)
+
+    def test_script_acceptance_storage_failure_can_be_recovered(self):
+        self.make_validation_snapshot()
+
+        def fail_acceptance_write(run_id, name, value):
+            if name == "script_acceptance.json":
+                raise RuntimeError("Acceptance storage failed")
+            return self.preserve_json(run_id, name, value)
+
+        self.storage.preserve_json.side_effect = fail_acceptance_write
+
+        with self.assertRaisesRegex(
+            RuntimeError, "Acceptance storage failed"
+        ):
+            self.validate_snapshot()
+
+        self.assertIn("script_validation.json", self.files)
+        marker = copy.deepcopy(self.files["script_validation.json"])
+        self.assertNotIn("script_acceptance.json", self.files)
+
+        self.storage.preserve_json.side_effect = self.preserve_json
+        result = self.validate_snapshot()
+
+        self.assertEqual(
+            result["artifacts"]["script_acceptance.json"], "created"
+        )
+        self.assertEqual(self.files["script_validation.json"], marker)
+
+        repeated = self.validate_snapshot()
+        self.assertEqual(
+            set(repeated["artifacts"].values()), {"unchanged"}
+        )
+
+    def test_conflicting_saved_script_prevents_acceptance(self):
+        self.make_validation_snapshot()
+        self.files["script.md"] = "Different existing script."
+
+        with self.assertRaisesRegex(
+            ValueError, "Existing artifact differs"
+        ):
+            self.validate_snapshot()
+
+        self.assertEqual(
+            self.files["script.md"], "Different existing script."
+        )
+        self.assertNotIn("script_acceptance.json", self.files)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Offline tests for the cloud briefing submission flow."""
 
 import unittest
+import hashlib
 import json
 from unittest.mock import MagicMock, Mock, patch
 
@@ -484,6 +485,7 @@ class BriefingValidationTests(unittest.TestCase):
             "briefing_sources.json",
             "briefing_usage.json",
             "briefing_validation.json",
+            "briefing_acceptance.json",
         ):
             self.assertNotIn(
                 (
@@ -604,6 +606,122 @@ class BriefingValidationTests(unittest.TestCase):
         self.assertEqual(result["artifacts"]["briefing.md"], "unchanged")
         self.assertEqual(
             result["artifacts"]["briefing_validation.json"], "created"
+        )
+
+    def test_acceptance_binds_exact_content_and_identity(self):
+        self.save_snapshot()
+        self.validate()
+
+        acceptance = self.storage.read_json(
+            self.run_id, "briefing_acceptance.json"
+        )
+
+        self.assertEqual(acceptance["status"], "accepted")
+        self.assertEqual(acceptance["stage"], "briefing")
+        self.assertEqual(acceptance["run_id"], self.run_id)
+        self.assertEqual(acceptance["response_id"], self.response_id)
+        self.assertEqual(acceptance["model"], self.snapshot["model"])
+        self.assertEqual(acceptance["schema_version"], 1)
+        self.assertEqual(acceptance["policy_version"], "automatic_v1")
+        self.assertEqual(
+            acceptance["acceptance_method"], "automated_checks"
+        )
+        self.assertEqual(
+            acceptance["eligible_uses"],
+            ["script_generation", "continuity"],
+        )
+        self.assertEqual(acceptance["source_count"], 1)
+
+        expected_hash = hashlib.sha256(
+            self.briefing["briefing_markdown"].encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            acceptance["briefing_sha256"], expected_hash
+        )
+
+        sources = self.storage.read_json(
+            self.run_id, "briefing_sources.json"
+        )
+        for field, value in (
+            ("carry_forward_sha256", self.briefing["carry_forward"]),
+            ("run_context_sha256", self.run_context),
+            ("sources_sha256", sources),
+        ):
+            with self.subTest(field=field):
+                canonical = json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                expected_hash = hashlib.sha256(
+                    canonical.encode("utf-8")
+                ).hexdigest()
+                self.assertEqual(acceptance[field], expected_hash)
+
+        # Acceptance must not change the existing validation marker.
+        self.assertEqual(
+            self.storage.read_json(
+                self.run_id, "briefing_validation.json"
+            ),
+            {
+                "run_id": self.run_id,
+                "response_id": self.response_id,
+                "status": "validated",
+                "source_count": 1,
+            },
+        )
+
+    def check_acceptance_storage_recovery(self, failing_filename):
+        self.save_snapshot()
+        original_preserve = self.storage.preserve_json
+
+        def fail_selected_artifact(run_id, filename, value):
+            if filename == failing_filename:
+                raise RuntimeError("Simulated storage failure")
+            return original_preserve(run_id, filename, value)
+
+        with patch.object(
+            self.storage,
+            "preserve_json",
+            side_effect=fail_selected_artifact,
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "Simulated storage failure"
+            ):
+                self.validate()
+
+        self.assertNotIn(
+            (
+                self.storage.bucket,
+                f"runs/{self.run_id}/briefing_acceptance.json",
+            ),
+            self.storage.client.objects,
+        )
+
+        result = self.validate()
+        self.assertEqual(
+            result["artifacts"]["briefing_acceptance.json"],
+            "created",
+        )
+
+        repeated = self.validate()
+        self.assertTrue(
+            all(
+                status == "unchanged"
+                for status in repeated["artifacts"].values()
+            )
+        )
+
+    def test_validation_marker_failure_prevents_acceptance(self):
+        self.check_acceptance_storage_recovery(
+            "briefing_validation.json"
+        )
+
+    def test_acceptance_storage_failure_can_be_reprocessed(self):
+        self.check_acceptance_storage_recovery(
+            "briefing_acceptance.json"
         )
 
 if __name__ == "__main__":
