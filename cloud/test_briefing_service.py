@@ -6,6 +6,9 @@ import json
 from unittest.mock import MagicMock, Mock, patch
 
 from cloud.briefing_service import (
+    _load_prior_continuity,
+    load_prepared_briefing_run,
+    prepare_briefing_run,
     retrieve_briefing_run,
     submit_prepared_briefing_run,
     validate_saved_briefing_run,
@@ -719,10 +722,343 @@ class BriefingValidationTests(unittest.TestCase):
             "briefing_validation.json"
         )
 
+    def test_prior_continuity_loads_exact_accepted_notes(self):
+        self.save_snapshot()
+        self.validate()
+
+        new_context = {
+            **self.run_context,
+            "episode_date": "2026-10-26",
+            "as_of_timestamp": "2026-10-26T06:00:00-04:00",
+            "run_id": "2026-10-26-001",
+        }
+
+        with patch("cloud.briefing_service.create_client") as factory:
+            result = _load_prior_continuity(
+                prior_run_id=self.run_id,
+                run_context=new_context,
+                storage=self.storage,
+            )
+
+        factory.assert_not_called()
+        self.assertEqual(
+            result["prior_carry_forward"],
+            self.briefing["carry_forward"],
+        )
+
+        provenance = result["prior_state_provenance"]
+        self.assertEqual(provenance["run_id"], self.run_id)
+        self.assertEqual(provenance["episode_date"], "2026-10-25")
+        self.assertEqual(provenance["response_id"], self.response_id)
+
+        acceptance = self.storage.read_json(
+            self.run_id, "briefing_acceptance.json"
+        )
+        canonical = json.dumps(
+            acceptance,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        self.assertEqual(
+            provenance["briefing_acceptance_sha256"],
+            hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(
+            provenance["carry_forward_sha256"],
+            acceptance["carry_forward_sha256"],
+        )
+
+    def test_prior_continuity_rejects_same_or_later_episode(self):
+        self.save_snapshot()
+        self.validate()
+
+        for episode_date in ("2026-10-25", "2026-10-24"):
+            with self.subTest(episode_date=episode_date):
+                new_context = {
+                    **self.run_context,
+                    "episode_date": episode_date,
+                    "as_of_timestamp": (
+                        f"{episode_date}T06:00:00-04:00"
+                    ),
+                    "run_id": f"{episode_date}-001",
+                }
+
+                with self.assertRaisesRegex(
+                    ValueError, "strictly before"
+                ):
+                    _load_prior_continuity(
+                        prior_run_id=self.run_id,
+                        run_context=new_context,
+                        storage=self.storage,
+                    )
+
+
+    def prepare_continuity_fixture(self):
+        self.save_snapshot()
+        self.validate()
+
+        new_context = {
+            **self.run_context,
+            "episode_date": "2026-10-26",
+            "as_of_timestamp": "2026-10-26T06:00:00-04:00",
+            "run_id": "2026-10-26-001",
+        }
+
+        prompt_patch = patch(
+            "cloud.briefing_service.load_prompt_bundle",
+            return_value={"briefing": "Offline briefing instructions."},
+        )
+        prompt_patch.start()
+        self.addCleanup(prompt_patch.stop)
+
+        result = prepare_briefing_run(
+            run_context=new_context,
+            model="gpt-6.1-sol",
+            prior_run_id=self.run_id,
+            storage=self.storage,
+        )
+        return new_context, result
+
+    def test_preparation_freezes_and_reloads_accepted_continuity(self):
+        new_context, result = self.prepare_continuity_fixture()
+        new_run_id = new_context["run_id"]
+
+        self.assertFalse(result["generation_requested"])
+
+        inputs = self.storage.read_json(new_run_id, "inputs.json")
+        self.assertEqual(inputs["continuity_mode"], "accepted_prior_state")
+        self.assertEqual(
+            inputs["prior_carry_forward"],
+            self.briefing["carry_forward"],
+        )
+        self.assertEqual(
+            inputs["prior_state_provenance"]["run_id"],
+            self.run_id,
+        )
+
+        request = self.storage.read_json(new_run_id, "request.json")
+        prefix = "Generate this edition using the supplied inputs:\n"
+        payload = json.loads(request["input"][len(prefix):])
+        self.assertEqual(
+            payload["prior_carry_forward"],
+            inputs["prior_carry_forward"],
+        )
+
+        loaded = load_prepared_briefing_run(
+            run_id=new_run_id,
+            storage=self.storage,
+        )
+        self.assertEqual(loaded["request"], request)
+
+        repeated = prepare_briefing_run(
+            run_context=new_context,
+            model="gpt-6.1-sol",
+            prior_run_id=self.run_id,
+            storage=self.storage,
+        )
+        self.assertTrue(
+            all(
+                value == "unchanged"
+                for value in repeated["artifacts"].values()
+            )
+        )
+
+    def test_no_prior_preparation_preserves_existing_input_format(self):
+        new_context = {
+            **self.run_context,
+            "run_id": "2026-10-25-993",
+        }
+
+        with patch(
+            "cloud.briefing_service.load_prompt_bundle",
+            return_value={"briefing": "Offline briefing instructions."},
+        ):
+            prepare_briefing_run(
+                run_context=new_context,
+                model="gpt-6.1-sol",
+                storage=self.storage,
+            )
+            load_prepared_briefing_run(
+                run_id=new_context["run_id"],
+                storage=self.storage,
+            )
+
+        inputs = self.storage.read_json(
+            new_context["run_id"], "inputs.json"
+        )
+        self.assertEqual(
+            inputs,
+            {
+                "run_context": new_context,
+                "model": "gpt-6.1-sol",
+                "prior_carry_forward": None,
+                "continuity_mode": "explicit_without_prior_state",
+            },
+        )
+
+    def test_prior_acceptance_failure_blocks_submission_before_claim(self):
+        new_context, _ = self.prepare_continuity_fixture()
+        original_read = self.storage.read_json
+
+        for failure in ("missing", "unreadable", "mismatched"):
+            with self.subTest(failure=failure):
+                def read_with_failure(run_id, filename):
+                    if (
+                        run_id == self.run_id
+                        and filename == "briefing_acceptance.json"
+                    ):
+                        if failure == "missing":
+                            raise RuntimeError("Simulated missing acceptance")
+                        if failure == "unreadable":
+                            raise ValueError("Simulated unreadable acceptance")
+                        return {
+                            **original_read(run_id, filename),
+                            "carry_forward_sha256": "changed",
+                        }
+                    return original_read(run_id, filename)
+
+                factory = Mock()
+
+                with patch.object(
+                    self.storage,
+                    "read_json",
+                    side_effect=read_with_failure,
+                ), patch.object(
+                    self.storage,
+                    "claim_briefing_submission",
+                ) as claim:
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        submit_prepared_briefing_run(
+                            run_id=new_context["run_id"],
+                            storage=self.storage,
+                            client_factory=factory,
+                        )
+
+                factory.assert_not_called()
+                claim.assert_not_called()
+
+    def test_changed_frozen_notes_are_rejected(self):
+        new_context, _ = self.prepare_continuity_fixture()
+        new_run_id = new_context["run_id"]
+        inputs = self.storage.read_json(new_run_id, "inputs.json")
+        inputs["prior_carry_forward"]["topics"].append({
+            "topic": "Changed topic",
+            "status": "ongoing",
+            "context": "Not part of the accepted prior notes.",
+        })
+
+        # Simulate corruption only inside fake offline storage.
+        key = (
+            self.storage.bucket,
+            f"runs/{new_run_id}/inputs.json",
+        )
+        self.storage.client.objects[key] = json.dumps(inputs).encode("utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError, "Saved prior carry-forward does not match"
+        ):
+            load_prepared_briefing_run(
+                run_id=new_run_id,
+                storage=self.storage,
+            )
+
     def test_acceptance_storage_failure_can_be_reprocessed(self):
         self.check_acceptance_storage_recovery(
             "briefing_acceptance.json"
         )
+
+class BriefingPreparationRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.event = {
+            "action": "prepare_briefing",
+            "model": "gpt-6.1-sol",
+            "run_context": {
+                "episode_date": "2026-10-28",
+                "timezone": "America/Toronto",
+                "as_of_timestamp": "2026-10-28T06:00:00-04:00",
+                "run_id": "2026-10-28-991",
+                "prompt_version": "v1",
+            },
+        }
+
+    def test_route_passes_selected_prior_run(self):
+        from cloud.lambda_function import lambda_handler
+
+        event = {
+            **self.event,
+            "prior_run_id": "2026-10-27-001",
+        }
+
+        with patch(
+            "cloud.briefing_service.prepare_briefing_run"
+        ) as prepare:
+            result = lambda_handler(event, None)
+
+        prepare.assert_called_once_with(
+            run_context=self.event["run_context"],
+            model=self.event["model"],
+            prior_run_id="2026-10-27-001",
+        )
+        self.assertIs(result, prepare.return_value)
+
+    def test_route_preserves_explicit_no_prior_state(self):
+        from cloud.lambda_function import lambda_handler
+
+        event = {
+            **self.event,
+            "no_prior_state": True,
+        }
+
+        with patch(
+            "cloud.briefing_service.prepare_briefing_run"
+        ) as prepare:
+            lambda_handler(event, None)
+
+        prepare.assert_called_once_with(
+            run_context=self.event["run_context"],
+            model=self.event["model"],
+            prior_run_id=None,
+        )
+
+    def test_route_rejects_invalid_continuity_choices(self):
+        from cloud.lambda_function import lambda_handler
+
+        invalid_choices = [
+            {},
+            {"no_prior_state": False},
+            {"no_prior_state": "true"},
+            {"prior_run_id": None},
+            {"prior_run_id": ""},
+            {"prior_run_id": "   "},
+            {"prior_run_id": 123},
+            {
+                "prior_run_id": "2026-10-27-001",
+                "no_prior_state": True,
+            },
+            {
+                "prior_run_id": "2026-10-27-001",
+                "no_prior_state": "false",
+            },
+            {
+                "no_prior_state": True,
+                "prior_carry_forward": {},
+            },
+        ]
+
+        for selection in invalid_choices:
+            with self.subTest(selection=selection):
+                with patch(
+                    "cloud.briefing_service.prepare_briefing_run"
+                ) as prepare:
+                    with self.assertRaises(ValueError):
+                        lambda_handler(
+                            {**self.event, **selection},
+                            None,
+                        )
+
+                prepare.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,11 @@ from uuid import uuid4
 from cloud.prompt_loader import load_prompt_bundle
 from cloud.run_context import validate_run_context
 from cloud.storage import S3RunStorage
-from cloud.acceptance import build_briefing_acceptance
+from cloud.acceptance import (
+    build_briefing_acceptance,
+    json_sha256,
+    load_accepted_briefing,
+)
 from cloud.text_generation import (
     build_briefing_request,
     create_client,
@@ -14,15 +18,72 @@ from cloud.text_generation import (
     validate_completed_briefing,
 )
 
+def _load_prior_continuity(*, prior_run_id, run_context, storage):
+    """Verify a selected prior run and describe its exact continuity."""
+    run_context = validate_run_context(run_context)
+
+    if not isinstance(prior_run_id, str) or not prior_run_id.strip():
+        raise ValueError("An explicit prior_run_id is required")
+
+    accepted = load_accepted_briefing(
+        run_id=prior_run_id,
+        storage=storage,
+    )
+
+    acceptance = accepted["acceptance"]
+
+    if "continuity" not in acceptance["eligible_uses"]:
+        raise ValueError("Prior briefing is not eligible for continuity")
+
+    prior_context = accepted["run_context"]
+
+    if prior_context["episode_date"] >= run_context["episode_date"]:
+        raise ValueError(
+            "Prior episode_date must be strictly before "
+            "the new episode_date"
+        )
+
+    return {
+        "prior_carry_forward": accepted["carry_forward"],
+        "prior_state_provenance": {
+            "run_id": prior_run_id,
+            "episode_date": prior_context["episode_date"],
+            "response_id": accepted["response_id"],
+            "briefing_acceptance_sha256": json_sha256(acceptance),
+            "carry_forward_sha256": acceptance["carry_forward_sha256"],
+        },
+    }
 
 def prepare_briefing_run(
     *,
     run_context,
     model,
     prior_carry_forward=None,
+    prior_run_id=None,
+    storage=None,
 ):
-    """Preserve inputs and the complete request for one run."""
+    """Freeze a request using accepted continuity or no prior state."""
     run_context = validate_run_context(run_context)
+
+    if prior_carry_forward is not None:
+        raise ValueError(
+            "Select an accepted prior_run_id instead of supplying "
+            "unverified prior_carry_forward"
+        )
+
+    if storage is None:
+        storage = S3RunStorage()
+
+    continuity = None
+
+    if prior_run_id is not None:
+        continuity = _load_prior_continuity(
+            prior_run_id=prior_run_id,
+            run_context=run_context,
+            storage=storage,
+        )
+        prior_carry_forward = continuity["prior_carry_forward"]
+
     bundle = load_prompt_bundle(run_context["prompt_version"])
 
     request = build_briefing_request(
@@ -37,13 +98,17 @@ def prepare_briefing_run(
         "model": model,
         "prior_carry_forward": prior_carry_forward,
         "continuity_mode": (
-            "supplied_prior_state"
-            if prior_carry_forward is not None
+            "accepted_prior_state"
+            if continuity is not None
             else "explicit_without_prior_state"
         ),
     }
 
-    storage = S3RunStorage()
+    if continuity is not None:
+        inputs["prior_state_provenance"] = (
+            continuity["prior_state_provenance"]
+        )
+
     run_id = run_context["run_id"]
 
     inputs_status = storage.preserve_json(
@@ -82,12 +147,23 @@ def load_prepared_briefing_run(*, run_id, storage=None):
     if not isinstance(request, dict):
         raise ValueError("Saved request must be a JSON object")
 
+    mode = inputs.get("continuity_mode")
+
     required_fields = {
         "run_context",
         "model",
         "prior_carry_forward",
         "continuity_mode",
     }
+
+    if mode == "accepted_prior_state":
+        required_fields.add("prior_state_provenance")
+    elif mode != "explicit_without_prior_state":
+        raise ValueError(
+            "Saved continuity_mode is unsupported; prior state "
+            "requires accepted-run provenance"
+        )
+
     if set(inputs) != required_fields:
         raise ValueError("Saved inputs have missing or unexpected fields")
 
@@ -97,13 +173,35 @@ def load_prepared_briefing_run(*, run_id, storage=None):
         raise ValueError("Saved run_id does not match the requested run")
 
     prior_state = inputs["prior_carry_forward"]
-    expected_mode = (
-        "supplied_prior_state"
-        if prior_state is not None
-        else "explicit_without_prior_state"
-    )
-    if inputs["continuity_mode"] != expected_mode:
-        raise ValueError("Saved continuity_mode does not match prior state")
+
+    if mode == "explicit_without_prior_state":
+        if prior_state is not None:
+            raise ValueError(
+                "Saved continuity_mode does not match prior state"
+            )
+    else:
+        provenance = inputs["prior_state_provenance"]
+
+        if not isinstance(provenance, dict):
+            raise ValueError("Saved prior_state_provenance must be an object")
+
+        verified = _load_prior_continuity(
+            prior_run_id=provenance.get("run_id"),
+            run_context=run_context,
+            storage=storage,
+        )
+
+        if provenance != verified["prior_state_provenance"]:
+            raise ValueError(
+                "Saved continuity provenance does not match "
+                "the accepted prior run"
+            )
+
+        if prior_state != verified["prior_carry_forward"]:
+            raise ValueError(
+                "Saved prior carry-forward does not match "
+                "the accepted prior run"
+            )
 
     bundle = load_prompt_bundle(run_context["prompt_version"])
 

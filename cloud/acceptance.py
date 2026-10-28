@@ -1,4 +1,4 @@
-"""Build automatic acceptance records without API calls or storage writes."""
+"""Build acceptance records and verify saved accepted briefing artifacts."""
 
 import hashlib
 import json
@@ -180,4 +180,115 @@ def build_script_acceptance(
         "dialogue_line_count": script["dialogue_line_count"],
         "within_word_target": script["within_word_target"],
         "eligible_uses": ["audio_generation"],
+    }
+
+def load_accepted_briefing(*, run_id, storage=None):
+    """Check saved briefing content and acceptance without loading prompts."""
+    if storage is None:
+        from cloud.storage import S3RunStorage
+
+        storage = S3RunStorage()
+
+    inputs = storage.read_json(run_id, "inputs.json")
+    reference = storage.read_json(
+        run_id,
+        "briefing_response_id.json",
+    )
+    validation = storage.read_json(
+        run_id,
+        "briefing_validation.json",
+    )
+
+    for name, value in (
+        ("Briefing inputs", inputs),
+        ("Briefing response reference", reference),
+        ("Briefing validation marker", validation),
+    ):
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must be an object")
+
+    run_context = validate_run_context(inputs.get("run_context"))
+
+    if run_context["run_id"] != run_id:
+        raise ValueError("Briefing inputs have a different run_id")
+
+    response_id = reference.get("response_id")
+
+    if (
+        reference.get("run_id") != run_id
+        or not isinstance(response_id, str)
+        or not response_id.strip()
+    ):
+        raise ValueError("Invalid briefing response reference")
+
+    if (
+        validation.get("status") != "validated"
+        or validation.get("run_id") != run_id
+        or validation.get("response_id") != response_id
+    ):
+        raise ValueError(
+            "Briefing validation does not match the requested run"
+        )
+
+    source_count = validation.get("source_count")
+
+    if (
+        isinstance(source_count, bool)
+        or not isinstance(source_count, int)
+        or source_count <= 0
+    ):
+        raise ValueError("Briefing validation has no source evidence")
+
+    briefing_markdown = storage.read_text(run_id, "briefing.md")
+    carry_forward = storage.read_json(run_id, "carry_forward.json")
+
+    # Recheck the extracted content against its original run context.
+    validate_briefing_response(
+        json.dumps(
+            {
+                "briefing_markdown": briefing_markdown,
+                "carry_forward": carry_forward,
+            },
+            ensure_ascii=False,
+            allow_nan=False,
+        ),
+        run_context,
+    )
+
+    # Require acceptance of the exact saved briefing and carry-forward.
+    sources = storage.read_json(run_id, "briefing_sources.json")
+    acceptance = storage.read_json(
+        run_id, "briefing_acceptance.json"
+    )
+
+    expected_acceptance = build_briefing_acceptance(
+        run_context=run_context,
+        validated_result={
+            "response_id": response_id,
+            "model": inputs.get("model"),
+            "briefing": {
+                "briefing_markdown": briefing_markdown,
+                "carry_forward": carry_forward,
+            },
+            "sources": sources,
+        },
+    )
+
+    if source_count != expected_acceptance["source_count"]:
+        raise ValueError(
+            "Briefing source evidence does not match validation"
+        )
+
+    if acceptance != expected_acceptance:
+        raise ValueError(
+            "Briefing acceptance does not match the saved "
+            "content, identity, or current acceptance policy"
+        )
+
+    return {
+        "run_context": run_context,
+        "response_id": response_id,
+        "briefing_markdown": briefing_markdown,
+        "carry_forward": carry_forward,
+        "acceptance": acceptance,
     }

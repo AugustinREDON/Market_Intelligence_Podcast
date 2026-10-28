@@ -116,15 +116,37 @@ def lambda_handler(event, context):
     if event.get("action") == "prepare_briefing":
         from cloud.briefing_service import prepare_briefing_run
 
-        if event.get("no_prior_state") is not True:
+        if "prior_carry_forward" in event:
             raise ValueError(
-                "This preparation test requires no_prior_state=true"
+                "Select prior_run_id instead of supplying raw prior state"
+            )
+
+        if (
+            "no_prior_state" in event
+            and not isinstance(event["no_prior_state"], bool)
+        ):
+            raise ValueError("no_prior_state must be a boolean")
+
+        has_prior_run = "prior_run_id" in event
+        no_prior_state = event.get("no_prior_state") is True
+
+        if has_prior_run:
+            prior_run_id = event["prior_run_id"]
+            if (
+                not isinstance(prior_run_id, str)
+                or not prior_run_id.strip()
+            ):
+                raise ValueError("prior_run_id must be a non-empty string")
+
+        if has_prior_run == no_prior_state:
+            raise ValueError(
+                "Choose exactly one: prior_run_id or no_prior_state=true"
             )
 
         return prepare_briefing_run(
             run_context=event["run_context"],
             model=event["model"],
-            prior_carry_forward=None,
+            prior_run_id=event.get("prior_run_id"),
         )
 
     if event.get("action") == "check_run_storage":
