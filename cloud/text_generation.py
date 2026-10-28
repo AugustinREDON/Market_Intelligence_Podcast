@@ -314,11 +314,14 @@ def submit_briefing(client, request):
 
 
 def retrieve_briefing(client, response_id):
-    """Retrieve an existing response without starting a new generation."""
+    """Retrieve an existing response with consulted-source metadata."""
     if not isinstance(response_id, str) or not response_id.strip():
         raise ValueError("A response ID is required")
 
-    return client.responses.retrieve(response_id)
+    return client.responses.retrieve(
+        response_id,
+        include=["web_search_call.action.sources"],
+    )
 
 
 def validate_completed_briefing(response, run_context):

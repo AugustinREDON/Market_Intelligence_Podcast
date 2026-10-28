@@ -270,7 +270,8 @@ class BriefingRetrievalTests(unittest.TestCase):
         result = self.retrieve()
 
         self.client.responses.retrieve.assert_called_once_with(
-            self.response_id
+            self.response_id,
+            include=["web_search_call.action.sources"],
         )
         self.client.responses.create.assert_not_called()
         self.assertEqual(
