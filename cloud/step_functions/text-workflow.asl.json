@@ -1,0 +1,608 @@
+{
+  "Comment": "Manual briefing-to-script pipeline. No scheduling.",
+  "QueryLanguage": "JSONPath",
+  "StartAt": "CheckAuthorization",
+  "TimeoutSeconds": 7200,
+  "States": {
+    "CheckAuthorization": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.confirm_paid_generation",
+          "BooleanEquals": true,
+          "Next": "ChooseContinuity"
+        }
+      ],
+      "Default": "InvalidInput"
+    },
+    "ChooseContinuity": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.prior_run_id",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.prior_run_id",
+              "IsString": true
+            },
+            {
+              "Not": {
+                "Variable": "$.prior_run_id",
+                "StringEquals": ""
+              }
+            },
+            {
+              "Variable": "$.no_prior_state",
+              "IsPresent": false
+            }
+          ],
+          "Next": "PrepareBriefingWithPrior"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.prior_run_id",
+              "IsPresent": false
+            },
+            {
+              "Variable": "$.no_prior_state",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "PrepareBriefingWithoutPrior"
+        }
+      ],
+      "Default": "InvalidInput"
+    },
+    "PrepareBriefingWithPrior": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "prepare_briefing",
+        "run_context.$": "$.run_context",
+        "model.$": "$.model",
+        "prior_run_id.$": "$.prior_run_id"
+      },
+      "ResultPath": "$.briefing_prepare",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckBriefingPreparation"
+    },
+    "PrepareBriefingWithoutPrior": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "prepare_briefing",
+        "run_context.$": "$.run_context",
+        "model.$": "$.model",
+        "no_prior_state": true
+      },
+      "ResultPath": "$.briefing_prepare",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckBriefingPreparation"
+    },
+    "CheckBriefingPreparation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.briefing_prepare.status",
+              "StringEquals": "inputs_and_request_preserved"
+            },
+            {
+              "Variable": "$.briefing_prepare.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            }
+          ],
+          "Next": "SubmitBriefing"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "SubmitBriefing": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_briefing",
+        "run_id.$": "$.run_context.run_id",
+        "confirm_paid_generation.$": "$.confirm_paid_generation"
+      },
+      "ResultPath": "$.briefing_submit",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "SubmissionOutcomeUncertain"
+        }
+      ],
+      "Next": "CheckBriefingSubmission"
+    },
+    "CheckBriefingSubmission": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.briefing_submit.status",
+              "StringEquals": "initial_response_preserved"
+            },
+            {
+              "Variable": "$.briefing_submit.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.briefing_submit.generation_requested",
+              "BooleanEquals": true
+            },
+            {
+              "Variable": "$.briefing_submit.response_id",
+              "IsString": true
+            },
+            {
+              "Not": {
+                "Variable": "$.briefing_submit.response_id",
+                "StringEquals": ""
+              }
+            }
+          ],
+          "Next": "InitializeBriefingPolling"
+        },
+        {
+          "Variable": "$.briefing_submit.status",
+          "StringEquals": "existing_claim_submission_blocked",
+          "Next": "ExistingSubmissionClaim"
+        }
+      ],
+      "Default": "SubmissionOutcomeUncertain"
+    },
+    "InitializeBriefingPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.briefing_poll",
+      "Next": "WaitForBriefing"
+    },
+    "WaitForBriefing": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "RetrieveBriefing"
+    },
+    "RetrieveBriefing": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "retrieve_briefing",
+        "run_id.$": "$.run_context.run_id"
+      },
+      "ResultPath": "$.briefing_retrieve",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckBriefingIdentity"
+    },
+    "CheckBriefingIdentity": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.briefing_retrieve.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.briefing_retrieve.response_id",
+              "StringEqualsPath": "$.briefing_submit.response_id"
+            }
+          ],
+          "Next": "CheckBriefingRetrieval"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "CheckBriefingRetrieval": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.briefing_retrieve.status",
+          "StringEquals": "completed_response_preserved",
+          "Next": "ValidateBriefing"
+        },
+        {
+          "Variable": "$.briefing_retrieve.status",
+          "StringEquals": "generation_pending",
+          "Next": "CountBriefingPoll"
+        },
+        {
+          "Variable": "$.briefing_retrieve.status",
+          "StringEquals": "generation_unsuccessful",
+          "Next": "GenerationUnsuccessful"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "CountBriefingPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.briefing_poll.count, 1)"
+      },
+      "ResultPath": "$.briefing_poll",
+      "Next": "CheckBriefingPollingLimit"
+    },
+    "CheckBriefingPollingLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.briefing_poll.count",
+          "NumericGreaterThanEquals": 60,
+          "Next": "PollingLimitReached"
+        }
+      ],
+      "Default": "WaitForBriefing"
+    },
+    "ValidateBriefing": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "validate_briefing",
+        "run_id.$": "$.run_context.run_id",
+        "snapshot_filename.$": "$.briefing_retrieve.snapshot_filename"
+      },
+      "ResultPath": "$.briefing_validate",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckBriefingAcceptance"
+    },
+    "CheckBriefingAcceptance": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.briefing_validate.status",
+              "StringEquals": "briefing_validated_and_preserved"
+            },
+            {
+              "Variable": "$.briefing_validate.acceptance_status",
+              "StringEquals": "accepted"
+            },
+            {
+              "Variable": "$.briefing_validate.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.briefing_validate.response_id",
+              "StringEqualsPath": "$.briefing_retrieve.response_id"
+            },
+            {
+              "Variable": "$.briefing_validate.snapshot_filename",
+              "StringEqualsPath": "$.briefing_retrieve.snapshot_filename"
+            }
+          ],
+          "Next": "PrepareScript"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "PrepareScript": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "prepare_script",
+        "run_id.$": "$.run_context.run_id",
+        "model.$": "$.model"
+      },
+      "ResultPath": "$.script_prepare",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckScriptPreparation"
+    },
+    "CheckScriptPreparation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.script_prepare.status",
+              "StringEquals": "script_inputs_and_request_preserved"
+            },
+            {
+              "Variable": "$.script_prepare.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            }
+          ],
+          "Next": "SubmitScript"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "SubmitScript": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_script",
+        "run_id.$": "$.run_context.run_id",
+        "confirm_paid_generation.$": "$.confirm_paid_generation"
+      },
+      "ResultPath": "$.script_submit",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "SubmissionOutcomeUncertain"
+        }
+      ],
+      "Next": "CheckScriptSubmission"
+    },
+    "CheckScriptSubmission": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.script_submit.status",
+              "StringEquals": "initial_response_preserved"
+            },
+            {
+              "Variable": "$.script_submit.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.script_submit.generation_requested",
+              "BooleanEquals": true
+            },
+            {
+              "Variable": "$.script_submit.response_id",
+              "IsString": true
+            },
+            {
+              "Not": {
+                "Variable": "$.script_submit.response_id",
+                "StringEquals": ""
+              }
+            }
+          ],
+          "Next": "InitializeScriptPolling"
+        },
+        {
+          "Variable": "$.script_submit.status",
+          "StringEquals": "existing_claim_submission_blocked",
+          "Next": "ExistingSubmissionClaim"
+        }
+      ],
+      "Default": "SubmissionOutcomeUncertain"
+    },
+    "InitializeScriptPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.script_poll",
+      "Next": "WaitForScript"
+    },
+    "WaitForScript": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "RetrieveScript"
+    },
+    "RetrieveScript": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "retrieve_script",
+        "run_id.$": "$.run_context.run_id"
+      },
+      "ResultPath": "$.script_retrieve",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckScriptIdentity"
+    },
+    "CheckScriptIdentity": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.script_retrieve.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.script_retrieve.response_id",
+              "StringEqualsPath": "$.script_submit.response_id"
+            }
+          ],
+          "Next": "CheckScriptRetrieval"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "CheckScriptRetrieval": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.script_retrieve.status",
+          "StringEquals": "completed_response_preserved",
+          "Next": "ValidateScript"
+        },
+        {
+          "Variable": "$.script_retrieve.status",
+          "StringEquals": "generation_pending",
+          "Next": "CountScriptPoll"
+        },
+        {
+          "Variable": "$.script_retrieve.status",
+          "StringEquals": "generation_unsuccessful",
+          "Next": "GenerationUnsuccessful"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "CountScriptPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.script_poll.count, 1)"
+      },
+      "ResultPath": "$.script_poll",
+      "Next": "CheckScriptPollingLimit"
+    },
+    "CheckScriptPollingLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.script_poll.count",
+          "NumericGreaterThanEquals": 60,
+          "Next": "PollingLimitReached"
+        }
+      ],
+      "Default": "WaitForScript"
+    },
+    "ValidateScript": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "validate_script",
+        "run_id.$": "$.run_context.run_id",
+        "snapshot_filename.$": "$.script_retrieve.snapshot_filename"
+      },
+      "ResultPath": "$.script_validate",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckScriptAcceptance"
+    },
+    "CheckScriptAcceptance": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.script_validate.status",
+              "StringEquals": "script_validated_and_preserved"
+            },
+            {
+              "Variable": "$.script_validate.acceptance_status",
+              "StringEquals": "accepted"
+            },
+            {
+              "Variable": "$.script_validate.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.script_validate.response_id",
+              "StringEqualsPath": "$.script_retrieve.response_id"
+            },
+            {
+              "Variable": "$.script_validate.snapshot_filename",
+              "StringEqualsPath": "$.script_retrieve.snapshot_filename"
+            }
+          ],
+          "Next": "TextPipelineAccepted"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "InvalidInput": {
+      "Type": "Fail",
+      "Error": "InvalidInput",
+      "Cause": "Authorize both text generations and choose exactly one of prior_run_id or no_prior_state=true."
+    },
+    "StageInvocationFailed": {
+      "Type": "Fail",
+      "Error": "StageInvocationFailed",
+      "Cause": "Preparation, retrieval, or validation failed. Inspect saved evidence before recovery."
+    },
+    "UnexpectedStageResult": {
+      "Type": "Fail",
+      "Error": "UnexpectedStageResult",
+      "Cause": "A stage returned an unexpected result or identity."
+    },
+    "SubmissionOutcomeUncertain": {
+      "Type": "Fail",
+      "Error": "SubmissionOutcomeUncertain",
+      "Cause": "Submission did not return confirmed preservation. Do not automatically resubmit."
+    },
+    "ExistingSubmissionClaim": {
+      "Type": "Fail",
+      "Error": "ExistingSubmissionClaim",
+      "Cause": "An existing submission claim blocked this execution. Inspect recovery evidence; do not assume success."
+    },
+    "GenerationUnsuccessful": {
+      "Type": "Fail",
+      "Error": "GenerationUnsuccessful",
+      "Cause": "Generation failed, was cancelled, or was incomplete. No automatic resubmission."
+    },
+    "PollingLimitReached": {
+      "Type": "Fail",
+      "Error": "PollingLimitReached",
+      "Cause": "Polling stopped after the configured limit. The remote generation may still be running."
+    },
+    "TextPipelineAccepted": {
+      "Type": "Succeed"
+    }
+  }
+}

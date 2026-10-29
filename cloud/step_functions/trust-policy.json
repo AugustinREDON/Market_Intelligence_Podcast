@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "states.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "340015815972"
+        },
+        "ArnEquals": {
+          "aws:SourceArn": "arn:aws:states:us-east-2:340015815972:stateMachine:mip-text-pipeline"
+        }
+      }
+    }
+  ]
+}

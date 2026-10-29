@@ -534,6 +534,7 @@ def validate_saved_briefing_run(
         "response_id": response_id,
         "snapshot_filename": snapshot_filename,
         "source_count": len(result["sources"]),
+        "acceptance_status": "accepted",
         "artifacts": artifacts,
         "generation_requested": False,
     }
