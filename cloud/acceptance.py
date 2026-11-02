@@ -292,3 +292,105 @@ def load_accepted_briefing(*, run_id, storage=None):
         "carry_forward": carry_forward,
         "acceptance": acceptance,
     }
+
+def load_accepted_script(*, run_id, storage=None):
+    """Return exact accepted script text without loading prompts or writing."""
+    if storage is None:
+        from cloud.storage import S3RunStorage
+
+        storage = S3RunStorage()
+
+    inputs = storage.read_json(run_id, "script_inputs.json")
+    reference = storage.read_json(run_id, "script_response_id.json")
+    validation = storage.read_json(run_id, "script_validation.json")
+    acceptance = storage.read_json(run_id, "script_acceptance.json")
+
+    for name, value in (
+        ("Script inputs", inputs),
+        ("Script response reference", reference),
+        ("Script validation marker", validation),
+        ("Script acceptance", acceptance),
+    ):
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must be an object")
+
+    run_context = validate_run_context(inputs.get("run_context"))
+
+    if run_context["run_id"] != run_id:
+        raise ValueError("Script inputs have a different run_id")
+
+    model = inputs.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("Script inputs have no usable model")
+
+    response_id = reference.get("response_id")
+    if (
+        reference.get("run_id") != run_id
+        or not isinstance(response_id, str)
+        or not response_id.strip()
+    ):
+        raise ValueError("Invalid script response reference")
+
+    script = storage.read_text(run_id, "script.md")
+    if not isinstance(script, str):
+        raise ValueError("Saved script must be text")
+
+    # Check exact saved text before validators normalize outer whitespace.
+    exact_hash = text_sha256(script)
+    if acceptance.get("script_sha256") != exact_hash:
+        raise ValueError(
+            "Script acceptance does not match the exact saved script"
+        )
+
+    accepted_briefing = load_accepted_briefing(
+        run_id=run_id,
+        storage=storage,
+    )
+
+    if accepted_briefing["run_context"] != run_context:
+        raise ValueError(
+            "Script run context does not match the accepted briefing"
+        )
+
+    expected_acceptance = build_script_acceptance(
+        script_inputs=inputs,
+        validated_result={
+            "response_id": response_id,
+            "model": model,
+            "script": script,
+        },
+        briefing_acceptance=accepted_briefing["acceptance"],
+    )
+
+    if acceptance != expected_acceptance:
+        raise ValueError(
+            "Script acceptance does not match the saved "
+            "content, identity, dependencies, or acceptance policy"
+        )
+
+    expected_validation = {
+        "status": "validated",
+        "run_id": run_id,
+        "response_id": response_id,
+        "model": model,
+        "script_sha256": exact_hash,
+        "spoken_word_count": expected_acceptance["spoken_word_count"],
+        "dialogue_line_count": expected_acceptance["dialogue_line_count"],
+        "within_word_target": expected_acceptance["within_word_target"],
+    }
+
+    # Legacy editorial-review flags are historical evidence.
+    # Authorization comes from the verified script_acceptance.json.
+    for field, expected in expected_validation.items():
+        if validation.get(field) != expected:
+            raise ValueError(
+                f"Script validation does not match saved artifacts: {field}"
+            )
+
+    return {
+        "run_context": run_context,
+        "response_id": response_id,
+        "model": model,
+        "script": script,
+        "acceptance": acceptance,
+    }
