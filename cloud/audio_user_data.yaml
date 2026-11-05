@@ -25,6 +25,31 @@ write_files:
       [Install]
       WantedBy=timers.target
 
+  - path: /etc/systemd/system/mip-audio-job.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Generate one MIP episode and stop the worker
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=exec
+      User=mip-audio
+      Group=mip-audio
+      WorkingDirectory=/opt/mip/app
+      EnvironmentFile=/etc/mip/audio.env
+      NoNewPrivileges=true
+      UMask=0077
+      ExecStartPre=+/usr/bin/systemctl is-active --quiet mip-max-runtime.timer
+      ExecStart=/opt/mip/venv/bin/python -m cloud.audio_job --job-file /opt/mip/app/audio_job.json --work-root /opt/mip/work
+      ExecStopPost=+/usr/bin/systemctl --no-block poweroff
+      Restart=no
+      TimeoutStopSec=300
+      StandardOutput=append:/var/log/mip/audio_worker.log
+      StandardError=inherit
+
+
   - path: /etc/mip/audio.env
     permissions: '0644'
     content: |

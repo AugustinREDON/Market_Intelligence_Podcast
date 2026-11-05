@@ -14,7 +14,7 @@ import boto3
 from botocore.config import Config
 
 from cloud.acceptance import load_accepted_script
-from cloud.audio_renderer import render_episode
+from cloud.audio_renderer import preflight_audio, render_episode
 from cloud.storage import S3RunStorage
 
 
@@ -129,6 +129,15 @@ def execute_job(*, job, client, work_root):
             if file_sha256(destination) != reference["sha256"]:
                 raise ValueError(f"Voice hash mismatch: {speaker}")
             voice_paths[speaker] = destination
+
+        preflight_result = preflight_audio(
+            voice_paths=voice_paths,
+            check_dir=attempt_dir / "preflight",
+        )
+        save_json(
+            attempt_dir / "preflight_result.json",
+            preflight_result,
+        )
 
         # A pre-existing claim always blocks a second generation.
         # An uncertain response also stops here without calling the renderer.

@@ -67,6 +67,13 @@ class AudioJobTests(unittest.TestCase):
         self.loader = loader.start()
         self.addCleanup(loader.stop)
 
+        preflight = patch(
+            "cloud.audio_job.preflight_audio",
+            return_value={"status": "passed"},
+        )
+        self.preflight = preflight.start()
+        self.addCleanup(preflight.stop)
+
         renderer = patch(
             "cloud.audio_job.render_episode",
             side_effect=self.fake_render,
@@ -133,6 +140,42 @@ class AudioJobTests(unittest.TestCase):
         self.assertEqual(success["status"], "audio_completed")
         self.assertIn(success["mp3_key"], self.objects)
         self.assertIn(success["wav_key"], self.objects)
+
+    def test_preflight_runs_before_claim(self):
+        def check_before_claim(**kwargs):
+            self.assertNotIn(self.claim_key, self.objects)
+            self.renderer.assert_not_called()
+            self.assertEqual(
+                set(kwargs["voice_paths"]),
+                {"HOST_A", "HOST_B"},
+            )
+            for path in kwargs["voice_paths"].values():
+                self.assertTrue(Path(path).is_file())
+            return {"status": "passed"}
+
+        self.preflight.side_effect = check_before_claim
+        self.run_job()
+
+        self.preflight.assert_called_once()
+        self.renderer.assert_called_once()
+        self.assertIn(self.claim_key, self.objects)
+
+    def test_preflight_failure_stops_before_claim(self):
+        self.preflight.side_effect = RuntimeError("CUDA check failed")
+
+        with self.assertRaisesRegex(RuntimeError, "CUDA check failed"):
+            self.run_job()
+
+        self.client.put_object.assert_not_called()
+        self.renderer.assert_not_called()
+        self.assertEqual(self.success_keys(), [])
+
+        results = list(self.work_root.rglob("job_result.json"))
+        self.assertEqual(len(results), 1)
+        report = json.loads(results[0].read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "failed")
+        self.assertFalse(report["claim_confirmed"])
+
 
     def test_second_job_cannot_generate_again(self):
         self.run_job()

@@ -3,6 +3,7 @@
   "workingDirectory": ["/opt/mip"],
   "commands": [
     "set -eu",
+    "trap 'status=$?; trap - EXIT; if [ \"$status\" -ne 0 ]; then echo \"Audio installation failed with exit code $status; requesting shutdown.\" >&2; /usr/bin/systemctl --no-block poweroff || true; fi; exit \"$status\"' EXIT",
     "systemctl is-active --quiet mip-max-runtime.timer",
     "command -v aws",
     "nvidia-smi",

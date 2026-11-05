@@ -12,6 +12,110 @@ from pathlib import Path
 from cloud.acceptance import text_sha256
 from cloud.output_validation import validate_script_for_acceptance
 
+def preflight_audio(*, voice_paths, check_dir):
+    """Check the runtime before claiming generation; do not load a model."""
+    import wave
+
+    if set(voice_paths) != {"HOST_A", "HOST_B"}:
+        raise ValueError("Both HOST_A and HOST_B voice paths are required")
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("FFmpeg is required")
+
+    import torch
+    import torchaudio
+    from chatterbox.tts import ChatterboxTTS
+
+    if not callable(getattr(ChatterboxTTS, "from_pretrained", None)):
+        raise RuntimeError("Chatterbox model loader is unavailable")
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA GPU is required for cloud rendering")
+
+    # Exercise CUDA allocation and execution, beyond detecting a device.
+    probe = torch.ones(1, device="cuda")
+    if probe.add(1).item() != 2:
+        raise RuntimeError("CUDA computation check failed")
+    torch.cuda.synchronize()
+    del probe
+
+    check_dir = Path(check_dir).resolve()
+    check_dir.mkdir(parents=True, exist_ok=False)
+
+    # Exercise the same WAV saving backend used for generated clips.
+    probe_path = check_dir / "save_probe.wav"
+    torchaudio.save(
+        str(probe_path),
+        torch.zeros(1, 2400),
+        24000,
+        encoding="PCM_S",
+        bits_per_sample=16,
+    )
+    with wave.open(str(probe_path), "rb") as source:
+        if (
+            source.getnchannels() != 1
+            or source.getsampwidth() != 2
+            or source.getframerate() != 24000
+            or source.getnframes() != 2400
+        ):
+            raise RuntimeError("Audio WAV saving check failed")
+
+    def run_ffmpeg(arguments):
+        with (check_dir / "ffmpeg.log").open("ab") as log:
+            subprocess.run(
+                [ffmpeg, "-nostdin", "-hide_banner", "-n", *arguments],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True,
+                timeout=120,
+            )
+
+    # Verify the MP3 encoder before any episode generation.
+    run_ffmpeg([
+        "-i", str(probe_path),
+        "-codec:a", "libmp3lame",
+        "-b:a", "192k",
+        str(check_dir / "encode_probe.mp3"),
+    ])
+
+    voice_checks = {}
+    for speaker, value in voice_paths.items():
+        source_path = Path(value).resolve()
+        if not source_path.is_file() or source_path.stat().st_size == 0:
+            raise ValueError(f"Missing or empty voice reference: {speaker}")
+
+        decoded_path = check_dir / f"{speaker.lower()}.wav"
+        run_ffmpeg([
+            "-i", str(source_path),
+            "-vn", "-ac", "1",
+            "-codec:a", "pcm_s16le",
+            str(decoded_path),
+        ])
+        with wave.open(str(decoded_path), "rb") as source:
+            if (
+                source.getnchannels() != 1
+                or source.getsampwidth() != 2
+                or source.getframerate() <= 0
+                or source.getnframes() <= 0
+            ):
+                raise ValueError(f"Unusable decoded voice: {speaker}")
+            voice_checks[speaker] = {
+                "sample_rate": source.getframerate(),
+                "frames": source.getnframes(),
+            }
+
+    return {
+        "status": "passed",
+        "gpu": torch.cuda.get_device_name(0),
+        "torch_version": str(torch.__version__),
+        "cuda_version": torch.version.cuda,
+        "voices": voice_checks,
+        "model_loaded": False,
+        "generation_requested": False,
+    }
+
 
 def render_episode(
     *,
