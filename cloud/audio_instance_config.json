@@ -1,0 +1,72 @@
+{
+  "ImageId": "ami-02af64c4e58db85b9",
+  "InstanceType": "g4dn.xlarge",
+  "MinCount": 1,
+  "MaxCount": 1,
+  "ClientToken": "mip-audio-worker-v1",
+  "IamInstanceProfile": {
+    "Name": "mip-audio-ec2-profile"
+  },
+  "NetworkInterfaces": [
+    {
+      "DeviceIndex": 0,
+      "SubnetId": "subnet-028f869a5dd41c3f3",
+      "Groups": [
+        "sg-06aeeb452636131bf"
+      ],
+      "AssociatePublicIpAddress": true,
+      "DeleteOnTermination": true
+    }
+  ],
+  "BlockDeviceMappings": [
+    {
+      "DeviceName": "/dev/sda1",
+      "Ebs": {
+        "VolumeSize": 100,
+        "VolumeType": "gp3",
+        "Iops": 3000,
+        "Throughput": 125,
+        "Encrypted": true,
+        "DeleteOnTermination": true
+      }
+    }
+  ],
+  "InstanceInitiatedShutdownBehavior": "stop",
+  "DisableApiTermination": true,
+  "MetadataOptions": {
+    "HttpEndpoint": "enabled",
+    "HttpTokens": "required",
+    "HttpPutResponseHopLimit": 1
+  },
+  "Monitoring": {
+    "Enabled": false
+  },
+  "TagSpecifications": [
+    {
+      "ResourceType": "instance",
+      "Tags": [
+        {
+          "Key": "Name",
+          "Value": "mip-audio-worker"
+        },
+        {
+          "Key": "Project",
+          "Value": "MarketIntelligencePodcast"
+        }
+      ]
+    },
+    {
+      "ResourceType": "volume",
+      "Tags": [
+        {
+          "Key": "Name",
+          "Value": "mip-audio-worker-disk"
+        },
+        {
+          "Key": "Project",
+          "Value": "MarketIntelligencePodcast"
+        }
+      ]
+    }
+  ]
+}

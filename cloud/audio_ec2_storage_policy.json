@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadRunArtifactsAndVoices",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*",
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/assets/voices/*"
+      ]
+    },
+    {
+      "Sid": "WriteAudioAttemptsAndClaims",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": [
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio/*",
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio_submission_claim.json"
+      ]
+    }
+  ]
+}

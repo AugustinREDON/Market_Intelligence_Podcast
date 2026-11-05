@@ -1,0 +1,23 @@
+{
+  "executionTimeout": ["3600"],
+  "workingDirectory": ["/opt/mip"],
+  "commands": [
+    "set -eu",
+    "systemctl is-active --quiet mip-max-runtime.timer",
+    "command -v aws",
+    "nvidia-smi",
+    "bundle_sha=41d2306c923afdda44cffda1e26cc4688c9b3c1bd751d9e844cc9eb196317b17",
+    "bundle_path=/opt/mip/audio_worker_${bundle_sha}.zip",
+    "AWS_MAX_ATTEMPTS=1 aws s3api get-object --bucket mip-storage-340015815972-us-east-2 --key runs/2026-10-28-002/audio/deployment/audio_worker_${bundle_sha}.zip --region us-east-2 --no-cli-pager \"$bundle_path\"",
+    "printf '%s  %s\\n' \"$bundle_sha\" \"$bundle_path\" | sha256sum --check -",
+    "/opt/mip/venv/bin/python -m zipfile -e \"$bundle_path\" /opt/mip/app",
+    "chown -R mip-audio:mip-audio /opt/mip/app",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip install --requirement /opt/mip/app/cloud/audio_requirements.txt --report /var/log/mip/audio_install_report.json > /var/log/mip/audio_install.log 2>&1 || { cat /var/log/mip/audio_install.log; exit 1; }",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip check",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip freeze > /var/log/mip/audio_requirements_installed.txt",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m torch.utils.collect_env > /var/log/mip/audio_environment.txt",
+    "cat /var/log/mip/audio_environment.txt",
+    "cd /opt/mip/app",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m cloud.audio_job --help"
+  ]
+}

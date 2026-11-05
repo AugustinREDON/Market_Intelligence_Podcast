@@ -1,0 +1,101 @@
+#cloud-config
+
+write_files:
+  - path: /etc/systemd/system/mip-max-runtime.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Stop MIP worker at maximum runtime
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/systemctl poweroff
+
+  - path: /etc/systemd/system/mip-max-runtime.timer
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=MIP worker maximum runtime from each boot
+
+      [Timer]
+      OnBootSec=90min
+      AccuracySec=1s
+      Unit=mip-max-runtime.service
+
+      [Install]
+      WantedBy=timers.target
+
+  - path: /etc/mip/audio.env
+    permissions: '0644'
+    content: |
+      HF_HOME=/opt/mip/cache/huggingface
+      XDG_CACHE_HOME=/opt/mip/cache
+      PYTHONUNBUFFERED=1
+      AWS_DEFAULT_REGION=us-east-2
+
+  - path: /usr/local/sbin/mip-audio-bootstrap
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -Eeuo pipefail
+
+      exec > >(tee -a /var/log/mip-audio-bootstrap.log) 2>&1
+
+      on_failure() {
+        status=$?
+        trap - ERR
+        echo "Bootstrap failed with exit code ${status}; stopping worker."
+        systemctl poweroff
+        exit "${status}"
+      }
+      trap on_failure ERR
+
+      # Require the shutdown timer before downloading or installing anything.
+      systemctl is-active --quiet mip-max-runtime.timer
+
+      if ! id mip-audio >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash mip-audio
+      fi
+
+      install -d -o mip-audio -g mip-audio \
+        /opt/mip/app \
+        /opt/mip/cache/huggingface \
+        /opt/mip/work \
+        /var/log/mip
+
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        python3.10 \
+        python3.10-venv \
+        ffmpeg \
+        libsndfile1 \
+        ca-certificates
+
+      if [ ! -x /opt/mip/venv/bin/python ]; then
+        runuser -u mip-audio -- \
+          python3.10 -m venv /opt/mip/venv
+      fi
+
+      if systemctl cat amazon-ssm-agent.service >/dev/null 2>&1; then
+        systemctl enable --now amazon-ssm-agent.service
+      elif systemctl cat snap.amazon-ssm-agent.amazon-ssm-agent.service \
+        >/dev/null 2>&1; then
+        systemctl enable --now \
+          snap.amazon-ssm-agent.amazon-ssm-agent.service
+      else
+        echo "No SSM Agent service found."
+        exit 1
+      fi
+
+      nvidia-smi
+      /opt/mip/venv/bin/python --version
+      ffmpeg -version
+      systemctl list-timers mip-max-runtime.timer --no-pager
+
+      echo "Base setup completed. Audio generation has not been started."
+
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, mip-max-runtime.timer]
+  - [/usr/local/sbin/mip-audio-bootstrap]

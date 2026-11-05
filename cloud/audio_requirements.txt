@@ -1,0 +1,10 @@
+# EC2 only: Ubuntu 22.04, Python 3.10, NVIDIA GPU.
+# Install in a dedicated virtual environment.
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
+chatterbox-tts==0.1.7
+numpy==1.26.4
+boto3==1.43.118
+python-dotenv==1.2.3
