@@ -85,6 +85,7 @@ write_files:
       install -d -o mip-audio -g mip-audio \
         /opt/mip/app \
         /opt/mip/cache/huggingface \
+        /opt/mip/venv \
         /opt/mip/work \
         /var/log/mip
 

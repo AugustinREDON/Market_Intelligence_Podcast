@@ -7,7 +7,7 @@
     "systemctl is-active --quiet mip-max-runtime.timer",
     "command -v aws",
     "nvidia-smi",
-    "bundle_sha=41d2306c923afdda44cffda1e26cc4688c9b3c1bd751d9e844cc9eb196317b17",
+    "bundle_sha=1d33d19591873cbed775663ec297c8753a90ae07bba1d96ef646488a00c3c964",
     "bundle_path=/opt/mip/audio_worker_${bundle_sha}.zip",
     "AWS_MAX_ATTEMPTS=1 aws s3api get-object --bucket mip-storage-340015815972-us-east-2 --key runs/2026-10-28-002/audio/deployment/audio_worker_${bundle_sha}.zip --region us-east-2 --no-cli-pager \"$bundle_path\"",
     "printf '%s  %s\\n' \"$bundle_sha\" \"$bundle_path\" | sha256sum --check -",
