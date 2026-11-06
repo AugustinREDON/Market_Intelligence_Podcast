@@ -24,6 +24,9 @@ from cloud.audio_service import (
     AUDIO_SAFEGUARD_PROBE,
     build_audio_safeguard_command,
     submit_audio_safeguard_check,
+    validate_audio_safeguard_output,
+    build_audio_safeguard_request,
+    retrieve_audio_safeguard_check,
 )
 
 
@@ -296,6 +299,15 @@ class AudioServiceTests(unittest.TestCase):
                     "lock_etag": '"offline-lock-etag"',
                 },
                 "audio_safeguard_check_submitted",
+            ),
+            (
+                "retrieve_audio_safeguard_check",
+                {
+                    **identity,
+                    "owner_token": "offline-owner-token",
+                    "lock_etag": '"offline-lock-etag"',
+                },
+                "audio_safeguards_verified",
             ),
             (
                 "start_audio_worker",
@@ -810,6 +822,349 @@ class AudioServiceTests(unittest.TestCase):
                     self.assertFalse(result["generation_requested"])
                 else:
                     self.assertEqual(output.getvalue(), "")
+
+    def test_safeguard_output_accepts_expected_probe(self):
+        probe = {
+            "status": "audio_safeguards_verified",
+            "probe_token": "a" * 32,
+            "boot_id": "12345678-1234-1234-1234-123456789abc",
+            "uptime_seconds": 120.25,
+            "shutdown_deadline_monotonic_us": 5_400_000_000,
+            "generation_requested": False,
+        }
+        self.assertEqual(
+            validate_audio_safeguard_output(
+                output=json.dumps(probe) + "\n",
+                probe_token="a" * 32,
+            ),
+            probe,
+        )
+
+    def test_safeguard_output_rejects_invalid_evidence(self):
+        probe = {
+            "status": "audio_safeguards_verified",
+            "probe_token": "a" * 32,
+            "boot_id": "12345678-1234-1234-1234-123456789abc",
+            "uptime_seconds": 120.25,
+            "shutdown_deadline_monotonic_us": 5_400_000_000,
+            "generation_requested": False,
+        }
+        mutations = [
+            {"status": "audio_safeguard_check_submitted"},
+            {"probe_token": "b" * 32},
+            {"generation_requested": True},
+            {"generation_requested": 0},
+            {"boot_id": "offline-boot-id"},
+            {"boot_id": probe["boot_id"].upper()},
+            {"uptime_seconds": True},
+            {"uptime_seconds": -1},
+            {"uptime_seconds": float("nan")},
+            {"uptime_seconds": float("inf")},
+            {"uptime_seconds": 10 ** 400},
+            {"uptime_seconds": 5401},
+            {"shutdown_deadline_monotonic_us": True},
+            {"shutdown_deadline_monotonic_us": 5_400_000_000.0},
+            {"shutdown_deadline_monotonic_us": 120_250_000},
+            {"shutdown_deadline_monotonic_us": 5_401_000_001},
+            {"unexpected": "field"},
+        ]
+        outputs = [
+            json.dumps({**probe, **change})
+            for change in mutations
+        ]
+        outputs.extend([
+            "",
+            "not JSON",
+            "[]",
+            "null",
+            "{}",
+            " " * 4097,
+            json.dumps(probe).replace(
+                '"generation_requested": false',
+                '"generation_requested": false, '
+                '"generation_requested": false',
+            ),
+        ])
+
+        for output in outputs:
+            with self.subTest(output=output):
+                with self.assertRaises(ValueError):
+                    validate_audio_safeguard_output(
+                        output=output,
+                        probe_token="a" * 32,
+                    )
+
+        for token in (None, "", "A" * 32, "a" * 31):
+            with self.subTest(token=token):
+                with self.assertRaises(ValueError):
+                    validate_audio_safeguard_output(
+                        output=json.dumps(probe),
+                        probe_token=token,
+                    )
+
+    def make_safeguard_retrieval_request(self):
+        request = self.make_release_request("running")
+        request.pop("ec2_client")
+        client = request["client"]
+        ownership = json.load(client.get_object.return_value["Body"])
+        now = datetime.now(timezone.utc)
+        token = "a" * 32
+        identity = {
+            key: ownership[key]
+            for key in ("run_id", "execution_arn", "instance_id", "owner_token")
+        }
+        prefix = f"runs/{self.run_id}/"
+        ssm_request = build_audio_safeguard_request(
+            run_id=self.run_id, bucket="offline-test", probe_token=token
+        )
+        claim = {
+            **identity,
+            "probe_token": token,
+            "requested_at": (now - timedelta(seconds=60)).isoformat(),
+            "request_sha256": json_sha256(ssm_request),
+            "output_prefix": ssm_request["OutputS3KeyPrefix"],
+            "automatic_retry_allowed": False,
+            "generation_requested": False,
+        }
+        command_id = "12345678-1234-1234-1234-123456789abc"
+        records = {
+            WORKER_LOCK_KEY: ownership,
+            prefix + "audio_instance_start_claim.json": {
+                **identity,
+                "requested_at": (now - timedelta(seconds=180)).isoformat(),
+                "automatic_retry_allowed": False,
+            },
+            prefix + "audio_safeguard_submission_claim.json": claim,
+            prefix + "audio_safeguard_submission.json": {
+                **claim,
+                "status": "audio_safeguard_check_submitted",
+                "command_id": command_id,
+                "claim_key": prefix + "audio_safeguard_submission_claim.json",
+            },
+        }
+
+        saved_bodies = {}
+
+        def read(**kwargs):
+            self.assertEqual(kwargs["Bucket"], "offline-test")
+            return {
+                "ETag": request["lock_etag"],
+                "Body": io.BytesIO(saved_bodies.get(
+                    kwargs["Key"], json.dumps(records[kwargs["Key"]]).encode()
+                )),
+            }
+
+        def preserve(**kwargs):
+            self.assertEqual(kwargs["IfNoneMatch"], "*")
+            key = kwargs["Key"]
+            if key in records:
+                raise ClientError(
+                    {"Error": {"Code": "PreconditionFailed"},
+                     "ResponseMetadata": {"HTTPStatusCode": 412}},
+                    "PutObject",
+                )
+            records[key] = json.loads(kwargs["Body"])
+            saved_bodies[key] = kwargs["Body"]
+            return {}
+
+        client.get_object.side_effect = read
+        client.put_object.side_effect = preserve
+        request["ssm_client"] = Mock()
+        request["ssm_client"].get_command_invocation.return_value = {
+            "CommandId": command_id,
+            "InstanceId": AUDIO_INSTANCE_ID,
+            "DocumentName": "AWS-RunShellScript",
+            "Comment": f"MIP safeguards {token}",
+            "PluginName": "aws:runShellScript",
+            "Status": "Success",
+            "StatusDetails": "Success",
+            "ResponseCode": 0,
+            "ExecutionStartDateTime": (now - timedelta(seconds=20)).isoformat(),
+            "ExecutionEndDateTime": (now - timedelta(seconds=10)).isoformat(),
+            "StandardErrorContent": "",
+            "StandardOutputContent": json.dumps({
+                "status": "audio_safeguards_verified",
+                "probe_token": token,
+                "boot_id": "23456789-1234-1234-1234-123456789abc",
+                "uptime_seconds": 150.0,
+                "shutdown_deadline_monotonic_us": 5_400_000_000,
+                "generation_requested": False,
+            }),
+        }
+        return request, records
+
+    def test_safeguard_retrieval_verifies_and_preserves_repeatable_result(self):
+        request, records = self.make_safeguard_retrieval_request()
+        result = retrieve_audio_safeguard_check(**request)
+        self.assertEqual(result["status"], "audio_safeguards_verified")
+        self.assertFalse(result["generation_requested"])
+        self.assertEqual(
+            records[result["result_key"]]["boot_id"], result["boot_id"]
+        )
+        self.assertEqual(retrieve_audio_safeguard_check(**request), result)
+        request["ssm_client"].get_command_invocation.assert_called_with(
+            CommandId="12345678-1234-1234-1234-123456789abc",
+            InstanceId=AUDIO_INSTANCE_ID,
+        )
+        request["ssm_client"].send_command.assert_not_called()
+        request["client"].delete_object.assert_not_called()
+
+    def test_safeguard_retrieval_checks_owner_before_ssm(self):
+        request, _ = self.make_safeguard_retrieval_request()
+        request["owner_token"] = "wrong-owner"
+        with self.assertRaises(ValueError):
+            retrieve_audio_safeguard_check(**request)
+        request["client"].get_object.assert_called_once()
+        request["ssm_client"].get_command_invocation.assert_not_called()
+        request["client"].put_object.assert_not_called()
+
+    def test_safeguard_retrieval_rejects_changed_saved_records(self):
+        for filename, field, value in (
+            ("audio_instance_start_claim.json", "execution_arn", "wrong"),
+            ("audio_instance_start_claim.json", "automatic_retry_allowed", 0),
+            ("audio_safeguard_submission_claim.json", "owner_token", "wrong"),
+            ("audio_safeguard_submission_claim.json", "request_sha256", "0" * 64),
+            ("audio_safeguard_submission_claim.json", "output_prefix", "wrong"),
+            ("audio_safeguard_submission_claim.json", "generation_requested", 0),
+            ("audio_safeguard_submission.json", "command_id", "not-a-uuid"),
+            ("audio_safeguard_submission.json", "probe_token", "b" * 32),
+            ("audio_safeguard_submission.json", "generation_requested", 0),
+        ):
+            with self.subTest(filename=filename, field=field):
+                request, records = self.make_safeguard_retrieval_request()
+                records[f"runs/{self.run_id}/{filename}"][field] = value
+                with self.assertRaises(ValueError):
+                    retrieve_audio_safeguard_check(**request)
+                request["ssm_client"].get_command_invocation.assert_not_called()
+                request["client"].put_object.assert_not_called()
+
+    def test_safeguard_retrieval_waits_without_resubmitting(self):
+        for status in ("Pending", "InProgress", "Delayed", "Cancelling"):
+            with self.subTest(status=status):
+                request, _ = self.make_safeguard_retrieval_request()
+                ssm = request["ssm_client"]
+                ssm.get_command_invocation.return_value["Status"] = status
+                result = retrieve_audio_safeguard_check(**request)
+                self.assertEqual(result["status"], "audio_safeguard_check_pending")
+                ssm.get_command_invocation.assert_called_once()
+                ssm.send_command.assert_not_called()
+                request["client"].put_object.assert_not_called()
+
+    def test_safeguard_retrieval_handles_visibility_and_propagates_errors(self):
+        for code in ("InvocationDoesNotExist", "AccessDeniedException"):
+            with self.subTest(code=code):
+                request, _ = self.make_safeguard_retrieval_request()
+                ssm = request["ssm_client"]
+                error = ClientError({"Error": {"Code": code}}, "GetCommandInvocation")
+                ssm.get_command_invocation.side_effect = error
+                if code == "InvocationDoesNotExist":
+                    result = retrieve_audio_safeguard_check(**request)
+                    self.assertEqual(result["reason"], "invocation_not_visible")
+                else:
+                    with self.assertRaises(ClientError) as caught:
+                        retrieve_audio_safeguard_check(**request)
+                    self.assertIs(caught.exception, error)
+                ssm.get_command_invocation.assert_called_once()
+                ssm.send_command.assert_not_called()
+                request["client"].put_object.assert_not_called()
+
+    def test_safeguard_retrieval_bounds_polling_without_cancelling(self):
+        request, records = self.make_safeguard_retrieval_request()
+        prefix = f"runs/{self.run_id}/"
+        old = datetime.now(timezone.utc) - timedelta(minutes=11)
+        records[prefix + "audio_instance_start_claim.json"]["requested_at"] = (
+            old - timedelta(minutes=1)
+        ).isoformat()
+        for name in (
+            "audio_safeguard_submission_claim.json",
+            "audio_safeguard_submission.json",
+        ):
+            records[prefix + name]["requested_at"] = old.isoformat()
+        with self.assertRaises(TimeoutError):
+            retrieve_audio_safeguard_check(**request)
+        request["ssm_client"].get_command_invocation.assert_not_called()
+        request["ssm_client"].send_command.assert_not_called()
+        request["ssm_client"].cancel_command.assert_not_called()
+
+    def test_safeguard_retrieval_preserves_terminal_failure(self):
+        for status in ("Failed", "TimedOut", "Cancelled"):
+            with self.subTest(status=status):
+                request, records = self.make_safeguard_retrieval_request()
+                invocation = request["ssm_client"].get_command_invocation.return_value
+                invocation.update(Status=status, StatusDetails=status, ResponseCode=1)
+                result = retrieve_audio_safeguard_check(**request)
+                self.assertEqual(result["status"], "audio_safeguard_check_failed")
+                self.assertEqual(
+                    records[result["evidence_key"]]["invocation"]["Status"], status
+                )
+                request["ssm_client"].send_command.assert_not_called()
+
+    def test_safeguard_retrieval_rejects_mismatched_invocation(self):
+        for field, value in (
+            ("CommandId", "23456789-1234-1234-1234-123456789abc"),
+            ("InstanceId", "i-wrong"),
+            ("DocumentName", "wrong"),
+            ("Comment", "wrong"),
+            ("Status", "Unknown"),
+        ):
+            with self.subTest(field=field):
+                request, _ = self.make_safeguard_retrieval_request()
+                request["ssm_client"].get_command_invocation.return_value[field] = value
+                with self.assertRaises(ValueError):
+                    retrieve_audio_safeguard_check(**request)
+                request["client"].put_object.assert_not_called()
+
+    def test_safeguard_retrieval_rejects_invalid_success_evidence(self):
+        for scenario in (
+            "nonzero_exit", "boolean_exit", "stderr", "details",
+            "wrong_token", "old_boot", "expired_now", "future", "naive",
+            "before_submission",
+        ):
+            with self.subTest(scenario=scenario):
+                request, records = self.make_safeguard_retrieval_request()
+                invocation = request["ssm_client"].get_command_invocation.return_value
+                probe = json.loads(invocation["StandardOutputContent"])
+                if scenario == "nonzero_exit":
+                    invocation["ResponseCode"] = 1
+                elif scenario == "boolean_exit":
+                    invocation["ResponseCode"] = False
+                elif scenario == "stderr":
+                    invocation["StandardErrorContent"] = "unexpected error"
+                elif scenario == "details":
+                    invocation["StatusDetails"] = "Failed"
+                elif scenario == "wrong_token":
+                    probe["probe_token"] = "b" * 32
+                elif scenario == "old_boot":
+                    probe["uptime_seconds"] = 600
+                elif scenario == "expired_now":
+                    probe["shutdown_deadline_monotonic_us"] = 155_000_000
+                elif scenario == "future":
+                    invocation["ExecutionEndDateTime"] = (
+                        datetime.now(timezone.utc) + timedelta(minutes=1)
+                    ).isoformat()
+                elif scenario == "naive":
+                    invocation["ExecutionEndDateTime"] = "2026-11-06T10:00:00"
+                else:
+                    invocation["ExecutionStartDateTime"] = (
+                        datetime.now(timezone.utc) - timedelta(minutes=2)
+                    ).isoformat()
+                invocation["StandardOutputContent"] = json.dumps(probe)
+                with self.assertRaises(ValueError):
+                    retrieve_audio_safeguard_check(**request)
+                prefix = f"runs/{self.run_id}/"
+                self.assertIn(prefix + "audio_safeguard_invocation.json", records)
+                self.assertNotIn(prefix + "audio_safeguard_result.json", records)
+                request["ssm_client"].send_command.assert_not_called()
+
+    def test_safeguard_retrieval_does_not_hide_evidence_write_failure(self):
+        request, _ = self.make_safeguard_retrieval_request()
+        request["client"].put_object.side_effect = TimeoutError("uncertain write")
+        with self.assertRaises(TimeoutError):
+            retrieve_audio_safeguard_check(**request)
+        request["client"].put_object.assert_called_once()
+        request["ssm_client"].get_command_invocation.assert_called_once()
+        request["ssm_client"].send_command.assert_not_called()
+
 
     def make_safeguard_submission_request(self):
         request = self.make_release_request("running")

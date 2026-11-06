@@ -820,6 +820,94 @@ def build_audio_safeguard_command(*, probe_token):
         + shlex.quote(probe_token)
     )
 
+def validate_audio_safeguard_output(*, output, probe_token):
+    """Validate probe output; this alone does not authorize audio startup."""
+    from uuid import UUID
+
+    if (
+        not isinstance(probe_token, str)
+        or len(probe_token) != 32
+        or any(c not in "0123456789abcdef" for c in probe_token)
+    ):
+        raise ValueError("Invalid expected safeguard probe token")
+
+    if not isinstance(output, str) or not 0 < len(output) <= 4096:
+        raise ValueError("Missing or oversized safeguard output")
+
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate safeguard output field")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError(f"Invalid JSON constant: {value}")
+
+    result = json.loads(
+        output,
+        object_pairs_hook=unique_fields,
+        parse_constant=reject_constant,
+    )
+    expected_fields = {
+        "status",
+        "probe_token",
+        "boot_id",
+        "uptime_seconds",
+        "shutdown_deadline_monotonic_us",
+        "generation_requested",
+    }
+    if not isinstance(result, dict) or set(result) != expected_fields:
+        raise ValueError("Unexpected safeguard output fields")
+
+    if (
+        result["status"] != "audio_safeguards_verified"
+        or result["probe_token"] != probe_token
+        or result["generation_requested"] is not False
+    ):
+        raise ValueError("Safeguard output does not match this probe")
+
+    boot_id = result["boot_id"]
+    if not isinstance(boot_id, str) or str(UUID(boot_id)) != boot_id:
+        raise ValueError("Expected a canonical guest boot UUID")
+
+    uptime = result["uptime_seconds"]
+    deadline = result["shutdown_deadline_monotonic_us"]
+    if (
+        type(uptime) not in (int, float)
+        or not 0 <= uptime < 5401
+        or type(deadline) is not int
+        or not uptime * 1_000_000 < deadline <= 5_401_000_000
+    ):
+        raise ValueError("Invalid safeguard uptime or shutdown deadline")
+
+    return result
+
+def build_audio_safeguard_request(*, run_id, bucket, probe_token):
+    """Build the exact SSM request shared by submission and retrieval."""
+    S3RunStorage._key(run_id, "audio_safeguard_submission_claim.json")
+    return {
+        "InstanceIds": [AUDIO_INSTANCE_ID],
+        "DocumentName": "AWS-RunShellScript",
+        "TimeoutSeconds": 60,
+        "Comment": f"MIP safeguards {probe_token}",
+        "Parameters": {
+            "commands": [
+                build_audio_safeguard_command(probe_token=probe_token)
+            ],
+            "executionTimeout": ["300"],
+            "workingDirectory": ["/opt/mip/app"],
+        },
+        "OutputS3Region": AUDIO_REGION,
+        "OutputS3BucketName": bucket,
+        "OutputS3KeyPrefix": (
+            f"runs/{run_id}/audio/safeguards/{probe_token}"
+        ),
+    }
+
+
+
 def submit_audio_safeguard_check(
     *,
     run_id,
@@ -872,27 +960,14 @@ def submit_audio_safeguard_check(
         raise ValueError("Unexpected audio worker connection result")
 
     probe_token = uuid4().hex
-    command = build_audio_safeguard_command(
+    requested_at = datetime.now(timezone.utc).isoformat()
+    request = build_audio_safeguard_request(
+        run_id=run_id,
+        bucket=bucket,
         probe_token=probe_token,
     )
-    requested_at = datetime.now(timezone.utc).isoformat()
-    output_prefix = (
-        f"runs/{run_id}/audio/safeguards/{probe_token}"
-    )
-    request = {
-        "InstanceIds": [AUDIO_INSTANCE_ID],
-        "DocumentName": "AWS-RunShellScript",
-        "TimeoutSeconds": 60,
-        "Comment": f"MIP safeguards {probe_token}",
-        "Parameters": {
-            "commands": [command],
-            "executionTimeout": ["300"],
-            "workingDirectory": ["/opt/mip/app"],
-        },
-        "OutputS3Region": AUDIO_REGION,
-        "OutputS3BucketName": bucket,
-        "OutputS3KeyPrefix": output_prefix,
-    }
+    output_prefix = request["OutputS3KeyPrefix"]
+
 
     claim_key = S3RunStorage._key(
         run_id,
@@ -975,4 +1050,236 @@ def submit_audio_safeguard_check(
     return {
         **receipt,
         "receipt_key": receipt_key,
+    }
+
+def retrieve_audio_safeguard_check(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ssm_client=None,
+):
+    """Read one saved command; never submit commands or modify EC2."""
+    from datetime import timedelta
+    from uuid import UUID
+
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client("s3", region_name=AUDIO_REGION, config=config)
+
+    _verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+    storage = S3RunStorage(bucket=bucket, client=client)
+    identity = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+    }
+
+    def timestamp(value):
+        if not isinstance(value, str):
+            raise ValueError("Expected an ISO timestamp")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("Safeguard timestamps must include a timezone")
+        return parsed
+
+    start_claim = storage.read_json(run_id, "audio_instance_start_claim.json")
+    claim = storage.read_json(run_id, "audio_safeguard_submission_claim.json")
+    receipt = storage.read_json(run_id, "audio_safeguard_submission.json")
+    if not all(isinstance(item, dict) for item in (start_claim, claim, receipt)):
+        raise ValueError("Expected saved safeguard records")
+
+    for record in (start_claim, claim):
+        if (
+            any(record.get(key) != value for key, value in identity.items())
+            or record.get("automatic_retry_allowed") is not False
+        ):
+            raise ValueError("Saved safeguard ownership does not match")
+
+    probe_token = claim.get("probe_token")
+    expected_request = build_audio_safeguard_request(
+        run_id=run_id,
+        bucket=bucket,
+        probe_token=probe_token,
+    )
+    expected_claim = {
+        **identity,
+        "probe_token": probe_token,
+        "requested_at": claim.get("requested_at"),
+        "request_sha256": json_sha256(expected_request),
+        "output_prefix": expected_request["OutputS3KeyPrefix"],
+        "automatic_retry_allowed": False,
+        "generation_requested": False,
+    }
+    if claim != expected_claim or claim.get("generation_requested") is not False:
+        raise ValueError("Saved safeguard claim does not match its request")
+
+    command_id = receipt.get("command_id")
+    if not isinstance(command_id, str) or str(UUID(command_id)) != command_id:
+        raise ValueError("Expected a canonical saved SSM command UUID")
+
+    claim_key = S3RunStorage._key(
+        run_id, "audio_safeguard_submission_claim.json"
+    )
+    expected_receipt = {
+        **claim,
+        "status": "audio_safeguard_check_submitted",
+        "command_id": command_id,
+        "claim_key": claim_key,
+    }
+    if (
+        receipt != expected_receipt
+        or receipt.get("automatic_retry_allowed") is not False
+        or receipt.get("generation_requested") is not False
+    ):
+        raise ValueError("Saved safeguard receipt does not match its claim")
+
+    start_requested = timestamp(start_claim.get("requested_at"))
+    requested = timestamp(claim["requested_at"])
+    now = datetime.now(timezone.utc)
+    if not start_requested <= requested <= now:
+        raise ValueError("Invalid start or safeguard submission timing")
+    if now - requested >= timedelta(seconds=600):
+        # This does not mean the SSM command was cancelled.
+        raise TimeoutError("Safeguard polling deadline exceeded; reconcile SSM")
+
+    result_base = {
+        **identity,
+        "command_id": command_id,
+        "probe_token": probe_token,
+        "generation_requested": False,
+    }
+    if ssm_client is None:
+        ssm_client = boto3.client(
+            "ssm", region_name=AUDIO_REGION, config=config
+        )
+    try:
+        invocation = ssm_client.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=AUDIO_INSTANCE_ID,
+        )
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "InvocationDoesNotExist":
+            raise
+        return {
+            **result_base,
+            "status": "audio_safeguard_check_pending",
+            "reason": "invocation_not_visible",
+        }
+
+    expected_invocation = {
+        "CommandId": command_id,
+        "InstanceId": AUDIO_INSTANCE_ID,
+        "DocumentName": "AWS-RunShellScript",
+        "Comment": expected_request["Comment"],
+    }
+    if any(
+        invocation.get(key) != value
+        for key, value in expected_invocation.items()
+    ):
+        raise ValueError("SSM invocation does not match the saved submission")
+
+    status = invocation.get("Status")
+    if status in {"Pending", "InProgress", "Delayed", "Cancelling"}:
+        return {
+            **result_base,
+            "status": "audio_safeguard_check_pending",
+            "reason": status,
+        }
+    if status not in {"Success", "Failed", "TimedOut", "Cancelled"}:
+        raise ValueError(f"Unexpected safeguard invocation status: {status}")
+
+    # Save terminal evidence before interpreting stdout. Exclude metadata
+    # and output URLs, which are not part of the stable execution result.
+    fields = (
+        "CommandId", "InstanceId", "DocumentName", "Comment", "PluginName",
+        "Status", "StatusDetails", "ResponseCode",
+        "ExecutionStartDateTime", "ExecutionEndDateTime",
+        "StandardOutputContent", "StandardErrorContent",
+    )
+    evidence = {
+        **result_base,
+        "start_requested_at": start_claim["requested_at"],
+        "submitted_at": claim["requested_at"],
+        "invocation": {key: invocation.get(key) for key in fields},
+    }
+    evidence_filename = "audio_safeguard_invocation.json"
+    storage.preserve_json(run_id, evidence_filename, evidence)
+    evidence_key = S3RunStorage._key(run_id, evidence_filename)
+
+    if status != "Success":
+        result = {
+            **result_base,
+            "status": "audio_safeguard_check_failed",
+            "invocation_status": status,
+            "evidence_key": evidence_key,
+        }
+    else:
+        if (
+            invocation.get("StatusDetails") != "Success"
+            or type(invocation.get("ResponseCode")) is not int
+            or invocation["ResponseCode"] != 0
+            or invocation.get("StandardErrorContent") != ""
+        ):
+            raise ValueError("SSM did not confirm a clean safeguard execution")
+
+        probe = validate_audio_safeguard_output(
+            output=invocation.get("StandardOutputContent"),
+            probe_token=probe_token,
+        )
+        started = timestamp(invocation.get("ExecutionStartDateTime"))
+        finished = timestamp(invocation.get("ExecutionEndDateTime"))
+        now = datetime.now(timezone.utc)
+        if not requested <= started <= finished <= now:
+            raise ValueError("Safeguard execution timing does not match submission")
+
+        # Uptime was sampled during the invocation. This rejects evidence
+        # from a boot predating our start request, allowing 5s clock skew.
+        latest_possible_boot = finished - timedelta(
+            seconds=probe["uptime_seconds"]
+        )
+        if latest_possible_boot < start_requested - timedelta(seconds=5):
+            raise ValueError("Safeguard output appears to come from an older boot")
+
+        # Conservatively age the sample from invocation start.
+        maximum_current_uptime = (
+            probe["uptime_seconds"] + (now - started).total_seconds()
+        )
+        if maximum_current_uptime * 1_000_000 >= probe["shutdown_deadline_monotonic_us"]:
+            raise ValueError("Safeguard shutdown deadline has already elapsed")
+
+        result = {
+            **result_base,
+            **probe,
+            "start_requested_at": start_claim["requested_at"],
+            "submitted_at": claim["requested_at"],
+            "execution_started_at": started.isoformat(),
+            "execution_finished_at": finished.isoformat(),
+            "evidence_key": evidence_key,
+        }
+
+    result_filename = "audio_safeguard_result.json"
+    storage.preserve_json(run_id, result_filename, result)
+    return {
+        **result,
+        "result_key": S3RunStorage._key(run_id, result_filename),
     }
