@@ -21,6 +21,7 @@ CODE_FILES = [
     "cloud/acceptance.py",
     "cloud/audio_service.py",
     "cloud/audio_handoff.py",
+    "cloud/audio_handoff_service.py",
 ]
 
 PROMPT_FILES = [
