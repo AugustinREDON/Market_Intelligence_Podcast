@@ -1,9 +1,14 @@
 """Offline checks for per-run audio job preparation."""
 import json
 import io
-from botocore.exceptions import ClientError
-
+import contextlib
+import shlex
+import subprocess
+import textwrap
 import unittest
+
+from pathlib import Path
+from botocore.exceptions import ClientError
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone, timedelta
 from cloud.acceptance import json_sha256
@@ -15,7 +20,9 @@ from cloud.audio_service import (
     prepare_audio_run,
     release_audio_worker,
     start_audio_worker,
-    check_audio_worker_connection
+    check_audio_worker_connection,
+    AUDIO_SAFEGUARD_PROBE,
+    build_audio_safeguard_command,
 )
 
 
@@ -594,6 +601,205 @@ class AudioServiceTests(unittest.TestCase):
 
         request["ec2_client"].describe_instances.assert_not_called()
         request["ssm_client"].describe_instance_information.assert_not_called()
+
+    def test_safeguard_command_preserves_script_and_validates_token(self):
+        token = "a" * 32
+        command = build_audio_safeguard_command(probe_token=token)
+
+        self.assertEqual(
+            shlex.split(command),
+            [
+                "/opt/mip/venv/bin/python",
+                "-c",
+                AUDIO_SAFEGUARD_PROBE,
+                token,
+            ],
+        )
+        compile(AUDIO_SAFEGUARD_PROBE, "<offline-probe>", "exec")
+
+        for invalid in (
+            None,
+            "",
+            "a" * 31,
+            "A" * 32,
+            ";" * 32,
+            "a" * 32 + "\n",
+        ):
+            with self.subTest(token=invalid):
+                with self.assertRaises(ValueError):
+                    build_audio_safeguard_command(
+                        probe_token=invalid,
+                    )
+
+    def test_safeguard_probe_checks_installed_units_and_timer(self):
+        # Use the installation file as the service configuration fixture.
+        source = (
+            Path(__file__).resolve().parent / "audio_user_data.yaml"
+        ).read_text()
+
+        units = {}
+        for unit in (
+            "mip-max-runtime.service",
+            "mip-max-runtime.timer",
+            "mip-audio-job.service",
+        ):
+            section = source.split(
+                f"  - path: /etc/systemd/system/{unit}\n",
+                1,
+            )[1]
+            content = section.split("    content: |\n", 1)[1]
+            lines = []
+            for line in content.splitlines():
+                if line.strip() and not line.startswith("      "):
+                    break
+                lines.append(line)
+            units[unit] = textwrap.dedent("\n".join(lines))
+
+        for scenario in (
+            "healthy",
+            "timer_inactive",
+            "timer_expired",
+            "timer_too_late",
+            "audio_running",
+            "audio_enabled",
+            "reload_needed",
+            "changed_unit",
+        ):
+            with self.subTest(scenario=scenario):
+                properties = {
+                    ("mip-max-runtime.timer", "ActiveState"): "active",
+                    ("mip-max-runtime.timer", "SubState"): "waiting",
+                    (
+                        "mip-max-runtime.timer",
+                        "NextElapseUSecMonotonic",
+                    ): "5400000000",
+                    ("mip-audio-job.service", "UnitFileState"): "static",
+                    ("mip-audio-job.service", "ActiveState"): "inactive",
+                    ("mip-max-runtime.service", "ActiveState"): "inactive",
+                }
+
+                if scenario == "timer_inactive":
+                    properties[
+                        ("mip-max-runtime.timer", "ActiveState")
+                    ] = "inactive"
+                elif scenario == "timer_expired":
+                    properties[
+                        (
+                            "mip-max-runtime.timer",
+                            "NextElapseUSecMonotonic",
+                        )
+                    ] = "1000000"
+                elif scenario == "timer_too_late":
+                    properties[
+                        (
+                            "mip-max-runtime.timer",
+                            "NextElapseUSecMonotonic",
+                        )
+                    ] = "7200000000"
+                elif scenario == "audio_running":
+                    properties[
+                        ("mip-audio-job.service", "ActiveState")
+                    ] = "active"
+                elif scenario == "audio_enabled":
+                    properties[
+                        ("mip-audio-job.service", "UnitFileState")
+                    ] = "enabled"
+
+                def fake_systemctl(command, **kwargs):
+                    self.assertEqual(command[0], "/usr/bin/systemctl")
+                    self.assertTrue(kwargs["check"])
+                    self.assertEqual(kwargs["timeout"], 10)
+                    operation, unit = command[1:3]
+
+                    if operation == "cat":
+                        output = units[unit]
+                        if (
+                            scenario == "changed_unit"
+                            and unit == "mip-audio-job.service"
+                        ):
+                            output = output.replace(
+                                "Restart=no",
+                                "Restart=always",
+                            )
+                    elif operation == "is-enabled":
+                        output = "enabled"
+                    elif operation == "show":
+                        property_name = command[3].split("=", 1)[1]
+                        if property_name == "LoadState":
+                            output = "loaded"
+                        elif property_name == "NeedDaemonReload":
+                            output = (
+                                "yes"
+                                if scenario == "reload_needed"
+                                else "no"
+                            )
+                        else:
+                            output = properties[(unit, property_name)]
+                    else:
+                        self.fail(f"Unexpected command: {command}")
+
+                    return subprocess.CompletedProcess(
+                        command,
+                        0,
+                        stdout=output + "\n",
+                        stderr="",
+                    )
+
+                def fake_read_text(path, *args, **kwargs):
+                    if str(path) == "/proc/uptime":
+                        return "120.0 100.0\n"
+                    if str(path) == "/proc/sys/kernel/random/boot_id":
+                        return "offline-boot-id\n"
+                    self.fail(f"Unexpected file read: {path}")
+
+                output = io.StringIO()
+                with (
+                    patch(
+                        "subprocess.run",
+                        side_effect=fake_systemctl,
+                    ),
+                    patch.object(
+                        Path,
+                        "read_text",
+                        new=fake_read_text,
+                    ),
+                    patch("sys.argv", ["probe", "a" * 32]),
+                    contextlib.redirect_stdout(output),
+                ):
+                    if scenario == "healthy":
+                        exec(
+                            compile(
+                                AUDIO_SAFEGUARD_PROBE,
+                                "<offline-probe>",
+                                "exec",
+                            ),
+                            {},
+                        )
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            exec(
+                                compile(
+                                    AUDIO_SAFEGUARD_PROBE,
+                                    "<offline-probe>",
+                                    "exec",
+                                ),
+                                {},
+                            )
+
+                if scenario == "healthy":
+                    result = json.loads(output.getvalue())
+                    self.assertEqual(
+                        result["status"],
+                        "audio_safeguards_verified",
+                    )
+                    self.assertEqual(result["probe_token"], "a" * 32)
+                    self.assertEqual(
+                        result["boot_id"],
+                        "offline-boot-id",
+                    )
+                    self.assertFalse(result["generation_requested"])
+                else:
+                    self.assertEqual(output.getvalue(), "")
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler

@@ -19,6 +19,7 @@ CODE_FILES = [
     "cloud/briefing_service.py",
     "cloud/script_service.py",
     "cloud/acceptance.py",
+    "cloud/audio_service.py",
 ]
 
 PROMPT_FILES = [

@@ -3,7 +3,7 @@
 import json
 import os
 from uuid import uuid4
-
+import shlex
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -615,3 +615,207 @@ def check_audio_worker_connection(
         "status": "audio_worker_connection_ready",
         "ssm_last_ping_at": ping.isoformat(),
     }
+
+AUDIO_SAFEGUARD_PROBE = r'''
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+def systemctl(*arguments):
+    return subprocess.run(
+        ["/usr/bin/systemctl", *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def normalized_unit(text):
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+expected_units = {
+    "mip-max-runtime.service": """
+[Unit]
+Description=Stop MIP worker at maximum runtime
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff
+""",
+    "mip-max-runtime.timer": """
+[Unit]
+Description=MIP worker maximum runtime from each boot
+
+[Timer]
+OnBootSec=90min
+AccuracySec=1s
+Unit=mip-max-runtime.service
+
+[Install]
+WantedBy=timers.target
+""",
+    "mip-audio-job.service": """
+[Unit]
+Description=Generate one MIP episode and stop the worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=mip-audio
+Group=mip-audio
+WorkingDirectory=/opt/mip/app
+EnvironmentFile=/etc/mip/audio.env
+NoNewPrivileges=true
+UMask=0077
+ExecStartPre=+/usr/bin/systemctl is-active --quiet mip-max-runtime.timer
+ExecStart=/opt/mip/venv/bin/python -m cloud.audio_job --job-file /opt/mip/app/audio_job.json --work-root /opt/mip/work
+ExecStopPost=+/usr/bin/systemctl --no-block poweroff
+Restart=no
+TimeoutStopSec=300
+StandardOutput=append:/var/log/mip/audio_worker.log
+StandardError=inherit
+""",
+}
+
+for unit, expected in expected_units.items():
+    require(
+        systemctl("show", unit, "--property=LoadState", "--value")
+        == "loaded",
+        f"Unit is not loaded: {unit}",
+    )
+    require(
+        systemctl(
+            "show",
+            unit,
+            "--property=NeedDaemonReload",
+            "--value",
+        ) == "no",
+        f"Unit requires daemon reload: {unit}",
+    )
+    require(
+        normalized_unit(systemctl("cat", unit))
+        == normalized_unit(expected),
+        f"Unexpected unit configuration: {unit}",
+    )
+
+require(
+    systemctl("is-enabled", "mip-max-runtime.timer") == "enabled",
+    "Shutdown timer is not enabled",
+)
+require(
+    systemctl(
+        "show",
+        "mip-max-runtime.timer",
+        "--property=ActiveState",
+        "--value",
+    ) == "active",
+    "Shutdown timer is not active",
+)
+require(
+    systemctl(
+        "show",
+        "mip-max-runtime.timer",
+        "--property=SubState",
+        "--value",
+    ) == "waiting",
+    "Shutdown timer is not waiting",
+)
+
+deadline_us = int(systemctl(
+    "show",
+    "mip-max-runtime.timer",
+    "--property=NextElapseUSecMonotonic",
+    "--value",
+))
+uptime_seconds = float(
+    Path("/proc/uptime").read_text().split()[0]
+)
+require(
+    uptime_seconds * 1_000_000 < deadline_us <= 5_401_000_000,
+    "Shutdown deadline is expired or exceeds the expected boot limit",
+)
+
+require(
+    systemctl(
+        "show",
+        "mip-audio-job.service",
+        "--property=UnitFileState",
+        "--value",
+    ) == "static",
+    "Audio service must remain static and not enabled on boot",
+)
+require(
+    systemctl(
+        "show",
+        "mip-audio-job.service",
+        "--property=ActiveState",
+        "--value",
+    ) == "inactive",
+    "Audio service is not inactive",
+)
+require(
+    systemctl(
+        "show",
+        "mip-max-runtime.service",
+        "--property=ActiveState",
+        "--value",
+    ) == "inactive",
+    "Shutdown service is already active",
+)
+
+print(json.dumps({
+    "status": "audio_safeguards_verified",
+    "probe_token": sys.argv[1],
+    "boot_id": (
+        Path("/proc/sys/kernel/random/boot_id")
+        .read_text()
+        .strip()
+    ),
+    "uptime_seconds": uptime_seconds,
+    "shutdown_deadline_monotonic_us": deadline_us,
+    "generation_requested": False,
+}, sort_keys=True))
+'''
+
+
+def build_audio_safeguard_command(*, probe_token):
+    """Build a read-only guest check; do not submit it to SSM."""
+    import shlex
+
+    if (
+        not isinstance(probe_token, str)
+        or len(probe_token) != 32
+        or any(
+            character not in "0123456789abcdef"
+            for character in probe_token
+        )
+    ):
+        raise ValueError(
+            "Expected a 32-character lowercase hex probe token"
+        )
+
+    compile(
+        AUDIO_SAFEGUARD_PROBE,
+        "<audio-safeguard-probe>",
+        "exec",
+    )
+    return (
+        "/opt/mip/venv/bin/python -c "
+        + shlex.quote(AUDIO_SAFEGUARD_PROBE)
+        + " "
+        + shlex.quote(probe_token)
+    )
