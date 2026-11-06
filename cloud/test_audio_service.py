@@ -1,13 +1,123 @@
 """Offline checks for per-run audio job preparation."""
+import json
+
+from botocore.exceptions import ClientError
 
 import unittest
 from unittest.mock import Mock, patch
 
 from cloud.acceptance import json_sha256
-from cloud.audio_service import prepare_audio_run
+from cloud.audio_service import (
+    AUDIO_INSTANCE_ID,
+    EXECUTION_ARN_PREFIX,
+    WORKER_LOCK_KEY,
+    acquire_audio_worker,
+    prepare_audio_run,
+)
 
 
 class AudioServiceTests(unittest.TestCase):
+
+    def test_worker_lock_blocks_competing_and_repeated_acquisition(self):
+        client = Mock()
+        saved = {}
+
+        def create_once(**kwargs):
+            self.assertEqual(kwargs["IfNoneMatch"], "*")
+            self.assertEqual(kwargs["Bucket"], "offline-test")
+            self.assertEqual(kwargs["Key"], WORKER_LOCK_KEY)
+
+            if saved:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "PreconditionFailed"},
+                        "ResponseMetadata": {"HTTPStatusCode": 412},
+                    },
+                    "PutObject",
+                )
+
+            saved["ownership"] = json.loads(kwargs["Body"])
+            return {"ETag": '"offline-lock-etag"'}
+
+        client.put_object.side_effect = create_once
+        execution_arn = EXECUTION_ARN_PREFIX + "offline-first"
+
+        first = acquire_audio_worker(
+            run_id=self.run_id,
+            execution_arn=execution_arn,
+            bucket="offline-test",
+            client=client,
+        )
+
+        self.assertEqual(first["status"], "audio_worker_acquired")
+        self.assertEqual(first["instance_id"], AUDIO_INSTANCE_ID)
+        self.assertEqual(first["lock_etag"], '"offline-lock-etag"')
+        self.assertFalse(first["generation_requested"])
+
+        ownership = saved["ownership"].copy()
+        self.assertEqual(ownership["run_id"], self.run_id)
+        self.assertEqual(ownership["execution_arn"], execution_arn)
+        self.assertEqual(
+            ownership["owner_token"],
+            first["owner_token"],
+        )
+
+        for run_id, owner in (
+            ("2026-11-06-999", EXECUTION_ARN_PREFIX + "offline-second"),
+            (self.run_id, execution_arn),
+        ):
+            with self.subTest(owner=owner):
+                blocked = acquire_audio_worker(
+                    run_id=run_id,
+                    execution_arn=owner,
+                    bucket="offline-test",
+                    client=client,
+                )
+                self.assertEqual(blocked["status"], "audio_worker_busy")
+                self.assertNotIn("owner_token", blocked)
+                self.assertNotIn("lock_etag", blocked)
+                self.assertEqual(saved["ownership"], ownership)
+
+        self.assertEqual(client.put_object.call_count, 3)
+        client.delete_object.assert_not_called()
+
+    def test_worker_lock_errors_do_not_authorize_or_retry(self):
+        errors = [
+            TimeoutError("Uncertain write response"),
+            ClientError(
+                {
+                    "Error": {"Code": "ConditionalRequestConflict"},
+                    "ResponseMetadata": {"HTTPStatusCode": 409},
+                },
+                "PutObject",
+            ),
+            ClientError(
+                {
+                    "Error": {"Code": "AccessDenied"},
+                    "ResponseMetadata": {"HTTPStatusCode": 403},
+                },
+                "PutObject",
+            ),
+        ]
+
+        for error in errors:
+            with self.subTest(error=str(error)):
+                client = Mock()
+                client.put_object.side_effect = error
+
+                with self.assertRaises(type(error)) as caught:
+                    acquire_audio_worker(
+                        run_id=self.run_id,
+                        execution_arn=(
+                            EXECUTION_ARN_PREFIX + "offline-uncertain"
+                        ),
+                        bucket="offline-test",
+                        client=client,
+                    )
+
+                self.assertIs(caught.exception, error)
+                client.put_object.assert_called_once()
+                client.delete_object.assert_not_called()
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler
