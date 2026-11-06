@@ -14,6 +14,7 @@ from cloud.audio_service import (
     acquire_audio_worker,
     prepare_audio_run,
     release_audio_worker,
+    start_audio_worker
 )
 
 
@@ -269,6 +270,15 @@ class AudioServiceTests(unittest.TestCase):
                 },
                 "audio_worker_released",
             ),
+            (
+                "start_audio_worker",
+                {
+                    **identity,
+                    "owner_token": "offline-owner-token",
+                    "lock_etag": '"offline-lock-etag"',
+                },
+                "audio_instance_start_requested",
+            ),
         ):
             with self.subTest(action=action):
                 expected = {
@@ -288,6 +298,129 @@ class AudioServiceTests(unittest.TestCase):
                 service.assert_called_once_with(**arguments)
                 self.assertEqual(result, expected)
 
+    def test_start_records_claim_before_requesting_ec2_start(self):
+        request = self.make_release_request()
+
+        def start_once(**kwargs):
+            self.assertEqual(
+                kwargs,
+                {"InstanceIds": [AUDIO_INSTANCE_ID]},
+            )
+            request["client"].put_object.assert_called_once()
+            saved = request["client"].put_object.call_args.kwargs
+            self.assertEqual(saved["IfNoneMatch"], "*")
+            self.assertEqual(
+                saved["Key"],
+                f"runs/{self.run_id}/audio_instance_start_claim.json",
+            )
+
+            claim = json.loads(saved["Body"])
+            self.assertEqual(claim["run_id"], self.run_id)
+            self.assertEqual(
+                claim["owner_token"],
+                request["owner_token"],
+            )
+            self.assertEqual(
+                claim["execution_arn"],
+                request["execution_arn"],
+            )
+            self.assertFalse(claim["automatic_retry_allowed"])
+
+            return {
+                "StartingInstances": [
+                    {
+                        "InstanceId": AUDIO_INSTANCE_ID,
+                        "PreviousState": {"Name": "stopped"},
+                        "CurrentState": {"Name": "pending"},
+                    }
+                ]
+            }
+
+        request["ec2_client"].start_instances.side_effect = start_once
+        result = start_audio_worker(**request)
+
+        self.assertEqual(
+            result["status"],
+            "audio_instance_start_requested",
+        )
+        self.assertEqual(result["run_id"], self.run_id)
+        self.assertFalse(result["generation_requested"])
+        request["ec2_client"].start_instances.assert_called_once()
+
+    def test_start_rejects_wrong_owner_before_ec2_check(self):
+        request = self.make_release_request()
+        request["owner_token"] = "another-owner"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership does not match",
+        ):
+            start_audio_worker(**request)
+
+        request["client"].put_object.assert_not_called()
+        request["ec2_client"].describe_instances.assert_not_called()
+        request["ec2_client"].start_instances.assert_not_called()
+
+    def test_start_requires_stopped_instance(self):
+        for state in ("pending", "running", "stopping"):
+            with self.subTest(state=state):
+                request = self.make_release_request(state)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "must be stopped",
+                ):
+                    start_audio_worker(**request)
+
+                request["client"].put_object.assert_not_called()
+                request["ec2_client"].start_instances.assert_not_called()
+
+    def test_start_claim_failure_prevents_ec2_start(self):
+        existing_claim = ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "PutObject",
+        )
+
+        for error in (
+            existing_claim,
+            TimeoutError("Uncertain start claim"),
+        ):
+            with self.subTest(error=str(error)):
+                request = self.make_release_request()
+                request["client"].put_object.side_effect = error
+
+                with self.assertRaises(type(error)) as caught:
+                    start_audio_worker(**request)
+
+                self.assertIs(caught.exception, error)
+                request["client"].put_object.assert_called_once()
+                request["ec2_client"].start_instances.assert_not_called()
+
+    def test_uncertain_ec2_start_is_not_retried(self):
+        for outcome in ("timeout", "unexpected_response"):
+            with self.subTest(outcome=outcome):
+                request = self.make_release_request()
+                start = request["ec2_client"].start_instances
+
+                if outcome == "timeout":
+                    start.side_effect = TimeoutError("Uncertain EC2 start")
+                    expected_error = TimeoutError
+                else:
+                    start.return_value = {"StartingInstances": []}
+                    expected_error = RuntimeError
+
+                with self.assertRaises(expected_error):
+                    start_audio_worker(**request)
+
+                request["client"].put_object.assert_called_once()
+                start.assert_called_once_with(
+                    InstanceIds=[AUDIO_INSTANCE_ID],
+                )
+                request["client"].delete_object.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler

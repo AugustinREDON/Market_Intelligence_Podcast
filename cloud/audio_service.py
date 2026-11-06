@@ -7,7 +7,7 @@ from uuid import uuid4
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-
+from datetime import datetime, timezone
 from cloud.acceptance import json_sha256, load_accepted_script
 from cloud.storage import S3RunStorage
 
@@ -296,4 +296,163 @@ def release_audio_worker(
     return {
         **result,
         "status": "audio_worker_released",
+    }
+
+def _verify_worker_lock(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket,
+    client,
+):
+    """Verify the current ownership record before an EC2 operation."""
+    S3RunStorage._key(run_id, "audio_job.json")
+
+    if (
+        not isinstance(lock_etag, str)
+        or not lock_etag.strip()
+        or lock_etag.strip() == "*"
+    ):
+        raise ValueError("Expected a specific lock ETag")
+
+    response = client.get_object(
+        Bucket=bucket,
+        Key=WORKER_LOCK_KEY,
+        IfMatch=lock_etag,
+    )
+    with response["Body"] as stream:
+        ownership = json.load(stream)
+
+    expected = {
+        "schema_version": 1,
+        "status": "ownership_held",
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+    }
+    if ownership != expected or response.get("ETag") != lock_etag:
+        raise ValueError("Worker ownership does not match this execution")
+
+
+def start_audio_worker(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ec2_client=None,
+):
+    """Request one EC2 start under verified ownership.
+
+    An existing or uncertain start claim never authorizes another request.
+    This function does not start the audio service.
+    """
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client(
+            "s3",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    _verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+
+    if ec2_client is None:
+        ec2_client = boto3.client(
+            "ec2",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    description = ec2_client.describe_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    instances = [
+        instance
+        for reservation in description.get("Reservations", [])
+        for instance in reservation.get("Instances", [])
+    ]
+    if (
+        len(instances) != 1
+        or instances[0].get("InstanceId") != AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected audio instance")
+
+    state = instances[0].get("State", {}).get("Name")
+    if state != "stopped":
+        raise ValueError(
+            f"Audio instance must be stopped before startup; found {state}"
+        )
+
+    requested_at = datetime.now(timezone.utc).isoformat()
+    claim_key = S3RunStorage._key(
+        run_id,
+        "audio_instance_start_claim.json",
+    )
+    claim = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+        "requested_at": requested_at,
+        "automatic_retry_allowed": False,
+    }
+
+    # Never retry this write or proceed after an uncertain response.
+    client.put_object(
+        Bucket=bucket,
+        Key=claim_key,
+        Body=json.dumps(
+            claim,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
+
+    # Never automatically repeat an uncertain EC2 start request.
+    response = ec2_client.start_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    started = response.get("StartingInstances", [])
+    if (
+        len(started) != 1
+        or started[0].get("InstanceId") != AUDIO_INSTANCE_ID
+        or started[0].get("PreviousState", {}).get("Name") != "stopped"
+        or started[0].get("CurrentState", {}).get("Name")
+        not in {"pending", "running"}
+    ):
+        raise RuntimeError(
+            "EC2 start outcome uncertain; inspect before recovery"
+        )
+
+    return {
+        "status": "audio_instance_start_requested",
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "requested_at": requested_at,
+        "start_claim_key": claim_key,
+        "generation_requested": False,
     }
