@@ -1,6 +1,6 @@
 """Offline checks for per-run audio job preparation."""
 import json
-
+import io
 from botocore.exceptions import ClientError
 
 import unittest
@@ -13,6 +13,7 @@ from cloud.audio_service import (
     WORKER_LOCK_KEY,
     acquire_audio_worker,
     prepare_audio_run,
+    release_audio_worker,
 )
 
 
@@ -118,6 +119,175 @@ class AudioServiceTests(unittest.TestCase):
                 self.assertIs(caught.exception, error)
                 client.put_object.assert_called_once()
                 client.delete_object.assert_not_called()
+
+    def make_release_request(self, state="stopped"):
+        ownership = {
+            "schema_version": 1,
+            "status": "ownership_held",
+            "run_id": self.run_id,
+            "execution_arn": EXECUTION_ARN_PREFIX + "offline-release",
+            "instance_id": AUDIO_INSTANCE_ID,
+            "owner_token": "offline-owner-token",
+        }
+        client = Mock()
+        client.get_object.return_value = {
+            "ETag": '"offline-lock-etag"',
+            "Body": io.BytesIO(json.dumps(ownership).encode("utf-8")),
+        }
+        client.delete_object.return_value = {
+            "ResponseMetadata": {"HTTPStatusCode": 204},
+        }
+
+        ec2_client = Mock()
+        ec2_client.describe_instances.return_value = {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "InstanceId": AUDIO_INSTANCE_ID,
+                            "State": {"Name": state},
+                        }
+                    ]
+                }
+            ]
+        }
+
+        return {
+            "run_id": self.run_id,
+            "execution_arn": ownership["execution_arn"],
+            "owner_token": ownership["owner_token"],
+            "lock_etag": '"offline-lock-etag"',
+            "bucket": "offline-test",
+            "client": client,
+            "ec2_client": ec2_client,
+        }
+
+    def test_release_requires_stopped_instance_and_conditional_delete(self):
+        request = self.make_release_request()
+        result = release_audio_worker(**request)
+
+        self.assertEqual(result["status"], "audio_worker_released")
+        self.assertEqual(result["instance_state"], "stopped")
+        request["client"].get_object.assert_called_once_with(
+            Bucket="offline-test",
+            Key=WORKER_LOCK_KEY,
+            IfMatch='"offline-lock-etag"',
+        )
+        request["ec2_client"].describe_instances.assert_called_once_with(
+            InstanceIds=[AUDIO_INSTANCE_ID],
+        )
+        request["client"].delete_object.assert_called_once_with(
+            Bucket="offline-test",
+            Key=WORKER_LOCK_KEY,
+            IfMatch='"offline-lock-etag"',
+        )
+
+    def test_release_keeps_lock_until_instance_stops(self):
+        for state in ("pending", "running", "stopping"):
+            with self.subTest(state=state):
+                request = self.make_release_request(state)
+                result = release_audio_worker(**request)
+
+                self.assertEqual(
+                    result["status"],
+                    "audio_worker_not_stopped",
+                )
+                self.assertEqual(result["instance_state"], state)
+                request["client"].delete_object.assert_not_called()
+                request["ec2_client"].start_instances.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
+
+    def test_release_rejects_mismatched_ownership_before_ec2_check(self):
+        for field, value in (
+            ("run_id", "2026-11-06-999"),
+            ("execution_arn", EXECUTION_ARN_PREFIX + "another-execution"),
+            ("owner_token", "another-token"),
+            ("lock_etag", '"another-etag"'),
+        ):
+            with self.subTest(field=field):
+                request = self.make_release_request()
+                request[field] = value
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "ownership does not match",
+                ):
+                    release_audio_worker(**request)
+
+                request["client"].delete_object.assert_not_called()
+                request["ec2_client"].describe_instances.assert_not_called()
+
+    def test_release_errors_are_not_retried_or_hidden(self):
+        changed_lock = ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "DeleteObject",
+        )
+
+        for operation, error in (
+            ("get_object", TimeoutError("Uncertain ownership read")),
+            ("delete_object", TimeoutError("Uncertain lock deletion")),
+            ("delete_object", changed_lock),
+        ):
+            with self.subTest(operation=operation, error=str(error)):
+                request = self.make_release_request()
+                method = getattr(request["client"], operation)
+                method.side_effect = error
+
+                with self.assertRaises(type(error)) as caught:
+                    release_audio_worker(**request)
+
+                self.assertIs(caught.exception, error)
+                method.assert_called_once()
+
+                if operation == "get_object":
+                    request["client"].delete_object.assert_not_called()
+                    request["ec2_client"].describe_instances.assert_not_called()
+
+    def test_lambda_routes_worker_ownership_actions(self):
+        from cloud.lambda_function import lambda_handler
+
+        identity = {
+            "run_id": self.run_id,
+            "execution_arn": EXECUTION_ARN_PREFIX + "offline-routing",
+        }
+
+        for action, arguments, status in (
+            (
+                "acquire_audio_worker",
+                identity,
+                "audio_worker_acquired",
+            ),
+            (
+                "release_audio_worker",
+                {
+                    **identity,
+                    "owner_token": "offline-owner-token",
+                    "lock_etag": '"offline-lock-etag"',
+                },
+                "audio_worker_released",
+            ),
+        ):
+            with self.subTest(action=action):
+                expected = {
+                    "status": status,
+                    "run_id": self.run_id,
+                }
+
+                with patch(
+                    f"cloud.audio_service.{action}",
+                    return_value=expected,
+                ) as service:
+                    result = lambda_handler(
+                        {"action": action, **arguments},
+                        None,
+                    )
+
+                service.assert_called_once_with(**arguments)
+                self.assertEqual(result, expected)
+
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler

@@ -163,3 +163,137 @@ def acquire_audio_worker(
         "owner_token": owner_token,
         "lock_etag": response["ETag"],
     }
+
+def release_audio_worker(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ec2_client=None,
+):
+    """Release verified ownership after the worker is confirmed stopped.
+
+    The caller must reconcile any outstanding start requests first.
+    This function never starts or stops EC2.
+    """
+    S3RunStorage._key(run_id, "audio_job.json")
+
+    if (
+        not isinstance(execution_arn, str)
+        or not execution_arn.startswith(EXECUTION_ARN_PREFIX)
+        or not execution_arn[len(EXECUTION_ARN_PREFIX):].strip()
+    ):
+        raise ValueError("Expected an execution ARN for mip-text-pipeline")
+
+    if not isinstance(owner_token, str) or not owner_token.strip():
+        raise ValueError("Expected an ownership token")
+
+    if (
+        not isinstance(lock_etag, str)
+        or not lock_etag.strip()
+        or lock_etag.strip() == "*"
+    ):
+        raise ValueError("Expected a specific lock ETag")
+
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+
+    if client is None:
+        client = boto3.client(
+            "s3",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    response = client.get_object(
+        Bucket=bucket,
+        Key=WORKER_LOCK_KEY,
+        IfMatch=lock_etag,
+    )
+    with response["Body"] as stream:
+        ownership = json.load(stream)
+
+    expected = {
+        "schema_version": 1,
+        "status": "ownership_held",
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+    }
+
+    if (
+        ownership != expected
+        or response.get("ETag") != lock_etag
+    ):
+        raise ValueError("Worker ownership does not match this execution")
+
+    # Do not inspect or modify EC2 without verified ownership.
+    if ec2_client is None:
+        ec2_client = boto3.client(
+            "ec2",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    description = ec2_client.describe_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    instances = [
+        instance
+        for reservation in description.get("Reservations", [])
+        for instance in reservation.get("Instances", [])
+    ]
+
+    if (
+        len(instances) != 1
+        or instances[0].get("InstanceId") != AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected audio instance")
+
+    state = instances[0].get("State", {}).get("Name")
+    if state not in {
+        "pending",
+        "running",
+        "stopping",
+        "stopped",
+    }:
+        raise ValueError(f"Unexpected audio instance state: {state}")
+
+    result = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "instance_state": state,
+        "generation_requested": False,
+    }
+
+    if state != "stopped":
+        return {
+            **result,
+            "status": "audio_worker_not_stopped",
+        }
+
+    # A changed lock or uncertain delete must propagate as an error.
+    deleted = client.delete_object(
+        Bucket=bucket,
+        Key=WORKER_LOCK_KEY,
+        IfMatch=lock_etag,
+    )
+    if deleted.get("ResponseMetadata", {}).get("HTTPStatusCode") != 204:
+        raise RuntimeError("Worker lock release was not confirmed")
+
+    return {
+        **result,
+        "status": "audio_worker_released",
+    }
