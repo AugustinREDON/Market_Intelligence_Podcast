@@ -23,6 +23,7 @@ from cloud.audio_service import (
     check_audio_worker_connection,
     AUDIO_SAFEGUARD_PROBE,
     build_audio_safeguard_command,
+    submit_audio_safeguard_check,
 )
 
 
@@ -286,6 +287,15 @@ class AudioServiceTests(unittest.TestCase):
                     "lock_etag": '"offline-lock-etag"',
                 },
                 "audio_worker_connection_ready",
+            ),
+            (
+                "submit_audio_safeguard_check",
+                {
+                    **identity,
+                    "owner_token": "offline-owner-token",
+                    "lock_etag": '"offline-lock-etag"',
+                },
+                "audio_safeguard_check_submitted",
             ),
             (
                 "start_audio_worker",
@@ -800,6 +810,174 @@ class AudioServiceTests(unittest.TestCase):
                     self.assertFalse(result["generation_requested"])
                 else:
                     self.assertEqual(output.getvalue(), "")
+
+    def make_safeguard_submission_request(self):
+        request = self.make_release_request("running")
+        request["ssm_client"] = Mock()
+
+        def send_once(**kwargs):
+            # The submission claim must exist before SSM is called.
+            request["client"].put_object.assert_called_once()
+            saved = request["client"].put_object.call_args.kwargs
+            claim = json.loads(saved["Body"])
+
+            self.assertEqual(saved["IfNoneMatch"], "*")
+            self.assertEqual(
+                saved["Key"],
+                f"runs/{self.run_id}/audio_safeguard_submission_claim.json",
+            )
+            self.assertEqual(claim["owner_token"], request["owner_token"])
+            self.assertEqual(claim["request_sha256"], json_sha256(kwargs))
+            self.assertFalse(claim["automatic_retry_allowed"])
+            self.assertFalse(claim["generation_requested"])
+
+            self.assertEqual(kwargs["InstanceIds"], [AUDIO_INSTANCE_ID])
+            self.assertEqual(kwargs["DocumentName"], "AWS-RunShellScript")
+            self.assertEqual(
+                kwargs["Parameters"]["commands"],
+                [
+                    build_audio_safeguard_command(
+                        probe_token=claim["probe_token"],
+                    )
+                ],
+            )
+
+            return {
+                "Command": {
+                    "CommandId": "12345678-1234-1234-1234-123456789abc",
+                    "InstanceIds": [AUDIO_INSTANCE_ID],
+                    "DocumentName": "AWS-RunShellScript",
+                    "Comment": kwargs["Comment"],
+                }
+            }
+
+        request["ssm_client"].send_command.side_effect = send_once
+        return request
+
+    def test_safeguard_submission_preserves_claim_and_command_receipt(self):
+        request = self.make_safeguard_submission_request()
+
+        with patch(
+            "cloud.audio_service.check_audio_worker_connection",
+            return_value={"status": "audio_worker_connection_ready"},
+        ) as connection:
+            result = submit_audio_safeguard_check(**request)
+
+        connection.assert_called_once_with(**request)
+        request["ssm_client"].send_command.assert_called_once()
+        self.assertEqual(request["client"].put_object.call_count, 2)
+
+        saved = request["client"].put_object.call_args.kwargs
+        receipt = json.loads(saved["Body"])
+        self.assertEqual(saved["IfNoneMatch"], "*")
+        self.assertEqual(
+            saved["Key"],
+            f"runs/{self.run_id}/audio_safeguard_submission.json",
+        )
+        self.assertEqual(
+            receipt["command_id"],
+            "12345678-1234-1234-1234-123456789abc",
+        )
+        self.assertEqual(
+            result["status"],
+            "audio_safeguard_check_submitted",
+        )
+        self.assertEqual(result["command_id"], receipt["command_id"])
+        self.assertFalse(result["generation_requested"])
+
+    def test_safeguard_submission_waits_for_connection(self):
+        request = self.make_safeguard_submission_request()
+        pending = {
+            "status": "audio_worker_connection_pending",
+            "reason": "ssm_not_fresh_online",
+        }
+
+        with patch(
+            "cloud.audio_service.check_audio_worker_connection",
+            return_value=pending,
+        ):
+            result = submit_audio_safeguard_check(**request)
+
+        self.assertEqual(result, pending)
+        request["client"].put_object.assert_not_called()
+        request["ssm_client"].send_command.assert_not_called()
+
+    def test_safeguard_claim_failure_prevents_ssm_submission(self):
+        existing_claim = ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "PutObject",
+        )
+
+        for error in (
+            existing_claim,
+            TimeoutError("Uncertain claim write"),
+        ):
+            with self.subTest(error=str(error)):
+                request = self.make_safeguard_submission_request()
+                request["client"].put_object.side_effect = error
+
+                with patch(
+                    "cloud.audio_service.check_audio_worker_connection",
+                    return_value={
+                        "status": "audio_worker_connection_ready",
+                    },
+                ):
+                    with self.assertRaises(type(error)) as caught:
+                        submit_audio_safeguard_check(**request)
+
+                self.assertIs(caught.exception, error)
+                request["client"].put_object.assert_called_once()
+                request["ssm_client"].send_command.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_uncertain_safeguard_submission_is_not_retried(self):
+        for scenario in ("timeout", "malformed_response"):
+            with self.subTest(scenario=scenario):
+                request = self.make_safeguard_submission_request()
+                send = request["ssm_client"].send_command
+
+                if scenario == "timeout":
+                    send.side_effect = TimeoutError(
+                        "Uncertain SSM submission"
+                    )
+                    expected_error = TimeoutError
+                else:
+                    send.side_effect = None
+                    send.return_value = {"Command": {}}
+                    expected_error = RuntimeError
+
+                with patch(
+                    "cloud.audio_service.check_audio_worker_connection",
+                    return_value={
+                        "status": "audio_worker_connection_ready",
+                    },
+                ):
+                    with self.assertRaises(expected_error):
+                        submit_audio_safeguard_check(**request)
+
+                send.assert_called_once()
+                request["client"].put_object.assert_called_once()
+                request["client"].delete_object.assert_not_called()
+
+    def test_safeguard_receipt_failure_does_not_resubmit(self):
+        request = self.make_safeguard_submission_request()
+        error = TimeoutError("Uncertain receipt write")
+        request["client"].put_object.side_effect = [{}, error]
+
+        with patch(
+            "cloud.audio_service.check_audio_worker_connection",
+            return_value={"status": "audio_worker_connection_ready"},
+        ):
+            with self.assertRaises(TimeoutError) as caught:
+                submit_audio_safeguard_check(**request)
+
+        self.assertIs(caught.exception, error)
+        request["ssm_client"].send_command.assert_called_once()
+        self.assertEqual(request["client"].put_object.call_count, 2)
+        request["client"].delete_object.assert_not_called()
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler

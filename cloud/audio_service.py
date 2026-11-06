@@ -819,3 +819,160 @@ def build_audio_safeguard_command(*, probe_token):
         + " "
         + shlex.quote(probe_token)
     )
+
+def submit_audio_safeguard_check(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ec2_client=None,
+    ssm_client=None,
+):
+    """Submit one read-only safeguard check under verified ownership."""
+    from uuid import UUID
+
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client(
+            "s3",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+    if ssm_client is None:
+        ssm_client = boto3.client(
+            "ssm",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    connection = check_audio_worker_connection(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+        ec2_client=ec2_client,
+        ssm_client=ssm_client,
+    )
+    if connection["status"] == "audio_worker_connection_pending":
+        return connection
+    if connection["status"] != "audio_worker_connection_ready":
+        raise ValueError("Unexpected audio worker connection result")
+
+    probe_token = uuid4().hex
+    command = build_audio_safeguard_command(
+        probe_token=probe_token,
+    )
+    requested_at = datetime.now(timezone.utc).isoformat()
+    output_prefix = (
+        f"runs/{run_id}/audio/safeguards/{probe_token}"
+    )
+    request = {
+        "InstanceIds": [AUDIO_INSTANCE_ID],
+        "DocumentName": "AWS-RunShellScript",
+        "TimeoutSeconds": 60,
+        "Comment": f"MIP safeguards {probe_token}",
+        "Parameters": {
+            "commands": [command],
+            "executionTimeout": ["300"],
+            "workingDirectory": ["/opt/mip/app"],
+        },
+        "OutputS3Region": AUDIO_REGION,
+        "OutputS3BucketName": bucket,
+        "OutputS3KeyPrefix": output_prefix,
+    }
+
+    claim_key = S3RunStorage._key(
+        run_id,
+        "audio_safeguard_submission_claim.json",
+    )
+    claim = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+        "probe_token": probe_token,
+        "requested_at": requested_at,
+        "request_sha256": json_sha256(request),
+        "output_prefix": output_prefix,
+        "automatic_retry_allowed": False,
+        "generation_requested": False,
+    }
+
+    # An existing or uncertain claim blocks any further submission.
+    client.put_object(
+        Bucket=bucket,
+        Key=claim_key,
+        Body=json.dumps(
+            claim,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
+
+    # Never automatically repeat a submission after an uncertain response.
+    response = ssm_client.send_command(**request)
+    submitted = response.get("Command", {})
+    command_id = submitted.get("CommandId")
+
+    try:
+        valid_command_id = (
+            isinstance(command_id, str)
+            and str(UUID(command_id)) == command_id
+        )
+    except (ValueError, AttributeError):
+        valid_command_id = False
+
+    if (
+        not valid_command_id
+        or submitted.get("InstanceIds") != [AUDIO_INSTANCE_ID]
+        or submitted.get("DocumentName") != "AWS-RunShellScript"
+        or submitted.get("Comment") != request["Comment"]
+    ):
+        raise RuntimeError(
+            "SSM safeguard submission outcome uncertain; "
+            "inspect the saved claim and SSM commands before recovery"
+        )
+
+    receipt_key = S3RunStorage._key(
+        run_id,
+        "audio_safeguard_submission.json",
+    )
+    receipt = {
+        **claim,
+        "status": "audio_safeguard_check_submitted",
+        "command_id": command_id,
+        "claim_key": claim_key,
+    }
+
+    # If saving the receipt fails, retain the claim and do not resubmit.
+    client.put_object(
+        Bucket=bucket,
+        Key=receipt_key,
+        Body=json.dumps(
+            receipt,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
+
+    return {
+        **receipt,
+        "receipt_key": receipt_key,
+    }
