@@ -456,3 +456,162 @@ def start_audio_worker(
         "start_claim_key": claim_key,
         "generation_requested": False,
     }
+
+def check_audio_worker_connection(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ec2_client=None,
+    ssm_client=None,
+):
+    """Check EC2 and a fresh SSM connection without changing the worker."""
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client(
+            "s3",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    _verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+
+    claim_key = S3RunStorage._key(
+        run_id,
+        "audio_instance_start_claim.json",
+    )
+    response = client.get_object(
+        Bucket=bucket,
+        Key=claim_key,
+    )
+    with response["Body"] as stream:
+        claim = json.load(stream)
+
+    expected = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+        "automatic_retry_allowed": False,
+    }
+    if (
+        not isinstance(claim, dict)
+        or any(claim.get(key) != value for key, value in expected.items())
+        or claim.get("automatic_retry_allowed") is not False
+    ):
+        raise ValueError("Start claim does not match this execution")
+
+    requested_at = datetime.fromisoformat(claim["requested_at"])
+    if requested_at.tzinfo is None or requested_at.utcoffset() is None:
+        raise ValueError("Start claim timestamp must include a timezone")
+    if requested_at > datetime.now(timezone.utc):
+        raise ValueError("Start claim timestamp is in the future")
+
+    if ec2_client is None:
+        ec2_client = boto3.client(
+            "ec2",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    description = ec2_client.describe_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    instances = [
+        instance
+        for reservation in description.get("Reservations", [])
+        for instance in reservation.get("Instances", [])
+    ]
+    if (
+        len(instances) != 1
+        or instances[0].get("InstanceId") != AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected audio instance")
+
+    state = instances[0].get("State", {}).get("Name")
+    result = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "instance_state": state,
+        "requested_at": requested_at.isoformat(),
+        "generation_requested": False,
+    }
+
+    if state == "pending":
+        return {
+            **result,
+            "status": "audio_worker_connection_pending",
+            "reason": "instance_pending",
+        }
+    if state != "running":
+        raise ValueError(
+            f"Audio instance is not starting or running; found {state}"
+        )
+
+    if ssm_client is None:
+        ssm_client = boto3.client(
+            "ssm",
+            region_name=AUDIO_REGION,
+            config=config,
+        )
+
+    information = ssm_client.describe_instance_information(
+        Filters=[
+            {
+                "Key": "InstanceIds",
+                "Values": [AUDIO_INSTANCE_ID],
+            }
+        ],
+    )
+    nodes = information.get("InstanceInformationList", [])
+    if not nodes:
+        return {
+            **result,
+            "status": "audio_worker_connection_pending",
+            "reason": "ssm_not_registered",
+        }
+    if (
+        len(nodes) != 1
+        or nodes[0].get("InstanceId") != AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected SSM node")
+
+    node = nodes[0]
+    ping = node.get("LastPingDateTime")
+    fresh_ping = (
+        isinstance(ping, datetime)
+        and ping.tzinfo is not None
+        and ping.utcoffset() is not None
+        and requested_at < ping <= datetime.now(timezone.utc)
+    )
+    if node.get("PingStatus") != "Online" or not fresh_ping:
+        return {
+            **result,
+            "status": "audio_worker_connection_pending",
+            "reason": "ssm_not_fresh_online",
+        }
+
+    return {
+        **result,
+        "status": "audio_worker_connection_ready",
+        "ssm_last_ping_at": ping.isoformat(),
+    }

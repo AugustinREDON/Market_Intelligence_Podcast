@@ -6,6 +6,16 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "check_audio_worker_connection":
+        from cloud.audio_service import check_audio_worker_connection
+
+        return check_audio_worker_connection(
+            run_id=event["run_id"],
+            execution_arn=event["execution_arn"],
+            owner_token=event["owner_token"],
+            lock_etag=event["lock_etag"],
+        )
+
     if event.get("action") == "start_audio_worker":
         from cloud.audio_service import start_audio_worker
 

@@ -5,7 +5,7 @@ from botocore.exceptions import ClientError
 
 import unittest
 from unittest.mock import Mock, patch
-
+from datetime import datetime, timezone, timedelta
 from cloud.acceptance import json_sha256
 from cloud.audio_service import (
     AUDIO_INSTANCE_ID,
@@ -14,7 +14,8 @@ from cloud.audio_service import (
     acquire_audio_worker,
     prepare_audio_run,
     release_audio_worker,
-    start_audio_worker
+    start_audio_worker,
+    check_audio_worker_connection
 )
 
 
@@ -271,6 +272,15 @@ class AudioServiceTests(unittest.TestCase):
                 "audio_worker_released",
             ),
             (
+                "check_audio_worker_connection",
+                {
+                    **identity,
+                    "owner_token": "offline-owner-token",
+                    "lock_etag": '"offline-lock-etag"',
+                },
+                "audio_worker_connection_ready",
+            ),
+            (
                 "start_audio_worker",
                 {
                     **identity,
@@ -421,6 +431,169 @@ class AudioServiceTests(unittest.TestCase):
                 )
                 request["client"].delete_object.assert_not_called()
                 request["ec2_client"].stop_instances.assert_not_called()
+
+    def make_connection_request(self, state="running"):
+        request = self.make_release_request(state)
+        requested_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+        claim = {
+            "run_id": request["run_id"],
+            "execution_arn": request["execution_arn"],
+            "instance_id": AUDIO_INSTANCE_ID,
+            "owner_token": request["owner_token"],
+            "requested_at": requested_at.isoformat(),
+            "automatic_retry_allowed": False,
+        }
+
+        ownership_response = request["client"].get_object.return_value
+        request["client"].get_object.side_effect = [
+            ownership_response,
+            {
+                "Body": io.BytesIO(
+                    json.dumps(claim).encode("utf-8")
+                ),
+            },
+        ]
+
+        request["ssm_client"] = Mock()
+        request["ssm_client"].describe_instance_information.return_value = {
+            "InstanceInformationList": [
+                {
+                    "InstanceId": AUDIO_INSTANCE_ID,
+                    "PingStatus": "Online",
+                    "LastPingDateTime": (
+                        requested_at + timedelta(minutes=1)
+                    ),
+                }
+            ],
+        }
+        return request, requested_at
+
+    def test_connection_requires_fresh_online_ssm(self):
+        for scenario in (
+            "fresh",
+            "stale",
+            "offline",
+            "missing",
+            "future",
+            "naive",
+        ):
+            with self.subTest(scenario=scenario):
+                request, requested_at = self.make_connection_request()
+                ssm = request["ssm_client"]
+                response = (
+                    ssm.describe_instance_information.return_value
+                )
+                node = response["InstanceInformationList"][0]
+
+                if scenario == "stale":
+                    node["LastPingDateTime"] = requested_at
+                elif scenario == "offline":
+                    node["PingStatus"] = "ConnectionLost"
+                elif scenario == "missing":
+                    response["InstanceInformationList"] = []
+                elif scenario == "future":
+                    node["LastPingDateTime"] = (
+                        datetime.now(timezone.utc)
+                        + timedelta(minutes=5)
+                    )
+                elif scenario == "naive":
+                    node["LastPingDateTime"] = datetime.now()
+
+                result = check_audio_worker_connection(**request)
+
+                expected_status = (
+                    "audio_worker_connection_ready"
+                    if scenario == "fresh"
+                    else "audio_worker_connection_pending"
+                )
+                self.assertEqual(result["status"], expected_status)
+                self.assertFalse(result["generation_requested"])
+                ssm.describe_instance_information.assert_called_once_with(
+                    Filters=[
+                        {
+                            "Key": "InstanceIds",
+                            "Values": [AUDIO_INSTANCE_ID],
+                        }
+                    ],
+                )
+                ssm.send_command.assert_not_called()
+                request["ec2_client"].start_instances.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
+                request["client"].put_object.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_connection_checks_instance_before_ssm(self):
+        for state in ("pending", "stopped", "stopping", "terminated"):
+            with self.subTest(state=state):
+                request, _ = self.make_connection_request(state)
+
+                if state == "pending":
+                    result = check_audio_worker_connection(**request)
+                    self.assertEqual(
+                        result["status"],
+                        "audio_worker_connection_pending",
+                    )
+                    self.assertEqual(result["reason"], "instance_pending")
+                else:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "not starting or running",
+                    ):
+                        check_audio_worker_connection(**request)
+
+                request["ssm_client"].assert_not_called()
+                request["ssm_client"].describe_instance_information.assert_not_called()
+                request["ssm_client"].send_command.assert_not_called()
+
+    def test_connection_rejects_wrong_owner_before_ec2_or_ssm(self):
+        request, _ = self.make_connection_request()
+        request["owner_token"] = "another-owner"
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "ownership does not match",
+        ):
+            check_audio_worker_connection(**request)
+
+        request["client"].get_object.assert_called_once()
+        request["ec2_client"].describe_instances.assert_not_called()
+        request["ssm_client"].describe_instance_information.assert_not_called()
+
+    def test_connection_rejects_start_claim_for_another_execution(self):
+        request, requested_at = self.make_connection_request()
+        ownership_response = (
+            request["client"].get_object.side_effect
+        )
+        ownership_response = next(ownership_response)
+
+        request["client"].get_object.side_effect = [
+            ownership_response,
+            {
+                "Body": io.BytesIO(
+                    json.dumps(
+                        {
+                            "run_id": request["run_id"],
+                            "execution_arn": (
+                                EXECUTION_ARN_PREFIX + "another-execution"
+                            ),
+                            "instance_id": AUDIO_INSTANCE_ID,
+                            "owner_token": request["owner_token"],
+                            "requested_at": requested_at.isoformat(),
+                            "automatic_retry_allowed": False,
+                        }
+                    ).encode("utf-8")
+                ),
+            },
+        ]
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Start claim does not match",
+        ):
+            check_audio_worker_connection(**request)
+
+        request["ec2_client"].describe_instances.assert_not_called()
+        request["ssm_client"].describe_instance_information.assert_not_called()
 
     def test_lambda_routes_audio_preparation(self):
         from cloud.lambda_function import lambda_handler
