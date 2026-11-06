@@ -91,7 +91,7 @@ write_files:
 
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y --no-install-recommends \
+      apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
         python3.10 \
         python3.10-venv \
         ffmpeg \
