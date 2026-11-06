@@ -97,6 +97,47 @@ class TextWorkflowTests(unittest.TestCase):
                 return rule["Next"]
         return state["Default"]
 
+    def test_audio_preparation_requires_expected_result_and_run(self):
+        task = self.states["PrepareAudio"]
+        self.assertEqual(
+            task["Parameters"],
+            {
+                "action": "prepare_audio",
+                "run_id.$": "$.run_context.run_id",
+            },
+        )
+        self.assertNotIn("Retry", task)
+        self.assertEqual(
+            task["Catch"][0]["Next"],
+            "StageInvocationFailed",
+        )
+
+        prepared = {
+            "status": "audio_job_prepared",
+            "run_id": self.run_id,
+            "generation_requested": False,
+        }
+        self.data["audio_prepare"] = prepared.copy()
+        self.assertEqual(
+            self.route("CheckAudioPreparation"),
+            "AudioJobPrepared",
+        )
+
+        for field, value in (
+            ("status", "unexpected"),
+            ("run_id", "different-run"),
+            ("generation_requested", True),
+        ):
+            with self.subTest(field=field):
+                changed = prepared.copy()
+                changed[field] = value
+                self.data["audio_prepare"] = changed
+                self.assertEqual(
+                    self.route("CheckAudioPreparation"),
+                    "UnexpectedStageResult",
+                )
+
+
     def test_saved_json_matches_builder(self):
         path = (
             Path(__file__).parent
@@ -305,7 +346,7 @@ class TextWorkflowTests(unittest.TestCase):
     def test_acceptance_requires_exact_completed_snapshot(self):
         for stage, next_state in (
             ("briefing", "PrepareScript"),
-            ("script", "TextPipelineAccepted"),
+            ("script", "PrepareAudio"),
         ):
             title = stage.title()
             snapshot = f"{stage}_response_snapshot_completed.json"

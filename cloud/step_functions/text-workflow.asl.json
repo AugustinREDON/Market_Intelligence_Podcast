@@ -561,7 +561,7 @@
               "StringEqualsPath": "$.script_retrieve.snapshot_filename"
             }
           ],
-          "Next": "TextPipelineAccepted"
+          "Next": "PrepareAudio"
         }
       ],
       "Default": "UnexpectedStageResult"
@@ -601,7 +601,50 @@
       "Error": "PollingLimitReached",
       "Cause": "Polling stopped after the configured limit. The remote generation may still be running."
     },
-    "TextPipelineAccepted": {
+    "PrepareAudio": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "prepare_audio",
+        "run_id.$": "$.run_context.run_id"
+      },
+      "ResultPath": "$.audio_prepare",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.workflow_error",
+          "Next": "StageInvocationFailed"
+        }
+      ],
+      "Next": "CheckAudioPreparation"
+    },
+    "CheckAudioPreparation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_prepare.status",
+              "StringEquals": "audio_job_prepared"
+            },
+            {
+              "Variable": "$.audio_prepare.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_prepare.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "AudioJobPrepared"
+        }
+      ],
+      "Default": "UnexpectedStageResult"
+    },
+    "AudioJobPrepared": {
       "Type": "Succeed"
     }
   }

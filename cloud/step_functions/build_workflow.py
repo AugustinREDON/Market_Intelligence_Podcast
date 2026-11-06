@@ -136,7 +136,7 @@ def build_definition():
             "script",
             "script_inputs_and_request_preserved",
             "script_validated_and_preserved",
-            "TextPipelineAccepted",
+            "PrepareAudio",
         ),
     ):
         title = stage.title()
@@ -397,7 +397,37 @@ def build_definition():
             "Cause": cause,
         }
 
-    states["TextPipelineAccepted"] = {"Type": "Succeed"}
+    states["PrepareAudio"] = task(
+        {
+            "action": "prepare_audio",
+            "run_id.$": "$.run_context.run_id",
+        },
+        "$.audio_prepare",
+        "CheckAudioPreparation",
+        "StageInvocationFailed",
+    )
+
+    states["CheckAudioPreparation"] = choice(
+        [
+            {
+                "And": [
+                    matches(
+                        "$.audio_prepare.status",
+                        "audio_job_prepared",
+                    ),
+                    same_run("$.audio_prepare"),
+                    {
+                        "Variable": "$.audio_prepare.generation_requested",
+                        "BooleanEquals": False,
+                    },
+                ],
+                "Next": "AudioJobPrepared",
+            }
+        ],
+        "UnexpectedStageResult",
+    )
+
+    states["AudioJobPrepared"] = {"Type": "Succeed"}
 
     return {
         "Comment": "Manual briefing-to-script pipeline. No scheduling.",
