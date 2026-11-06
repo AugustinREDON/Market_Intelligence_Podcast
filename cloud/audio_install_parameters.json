@@ -13,6 +13,8 @@
     "printf '%s  %s\\n' \"$bundle_sha\" \"$bundle_path\" | sha256sum --check -",
     "/opt/mip/venv/bin/python -m zipfile -e \"$bundle_path\" /opt/mip/app",
     "chown -R mip-audio:mip-audio /opt/mip/app",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip install --upgrade pip==25.3",
+    "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip --version",
     "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip install --requirement /opt/mip/app/cloud/audio_requirements.txt --report /var/log/mip/audio_install_report.json > /var/log/mip/audio_install.log 2>&1 || { cat /var/log/mip/audio_install.log; exit 1; }",
     "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip check",
     "runuser -u mip-audio -- /opt/mip/venv/bin/python -m pip freeze > /var/log/mip/audio_requirements_installed.txt",
