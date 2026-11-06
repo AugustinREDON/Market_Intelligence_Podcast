@@ -6,6 +6,13 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "prepare_audio":
+        from cloud.audio_service import prepare_audio_run
+
+        return prepare_audio_run(
+            run_id=event["run_id"],
+        )
+
     if event.get("action") == "retrieve_script":
         from cloud.script_service import retrieve_script_run
 
