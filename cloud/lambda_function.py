@@ -6,6 +6,17 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
+    if event.get("action") == "prepare_audio_handoff":
+        from cloud.audio_service import prepare_audio_handoff
+
+        return prepare_audio_handoff(
+            run_id=event["run_id"],
+            execution_arn=event["execution_arn"],
+            owner_token=event["owner_token"],
+            lock_etag=event["lock_etag"],
+        )
+
+
     if event.get("action") == "retrieve_audio_safeguard_check":
         from cloud.audio_service import retrieve_audio_safeguard_check
 

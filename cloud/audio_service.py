@@ -1283,3 +1283,68 @@ def retrieve_audio_safeguard_check(
         **result,
         "result_key": S3RunStorage._key(run_id, result_filename),
     }
+
+def prepare_audio_handoff(
+    *,
+    run_id,
+    execution_arn,
+    owner_token,
+    lock_etag,
+    bucket=None,
+    client=None,
+    ssm_client=None,
+):
+    """Preserve a verified handoff descriptor without submitting it."""
+    from cloud.audio_handoff import build_audio_handoff_command
+
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+    if client is None:
+        client = boto3.client(
+            "s3",
+            region_name=AUDIO_REGION,
+            config=Config(
+                retries={"total_max_attempts": 1},
+                connect_timeout=10,
+                read_timeout=30,
+            ),
+        )
+    safeguards = retrieve_audio_safeguard_check(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+        ssm_client=ssm_client,
+    )
+    if safeguards["status"] != "audio_safeguards_verified":
+        return safeguards
+
+    storage = S3RunStorage(bucket=bucket, client=client)
+    prepared = prepare_audio_run(run_id=run_id, storage=storage)
+    payload = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+        "lock_etag": lock_etag,
+        "bucket": bucket,
+        "region": AUDIO_REGION,
+        "boot_id": safeguards["boot_id"],
+        "handoff_token": safeguards["probe_token"],
+        "job_sha256": prepared["job_sha256"],
+        "script_sha256": prepared["script_sha256"],
+    }
+    # Compile and validate the self-contained command before preserving.
+    build_audio_handoff_command(payload)
+    preservation = storage.preserve_json(run_id, "audio_handoff.json", payload)
+    return {
+        "status": "audio_handoff_prepared",
+        **payload,
+        "handoff_key": S3RunStorage._key(run_id, "audio_handoff.json"),
+        "handoff_sha256": json_sha256(payload),
+        "preservation": preservation,
+        "generation_requested": False,
+    }

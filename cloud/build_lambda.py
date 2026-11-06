@@ -20,6 +20,7 @@ CODE_FILES = [
     "cloud/script_service.py",
     "cloud/acceptance.py",
     "cloud/audio_service.py",
+    "cloud/audio_handoff.py",
 ]
 
 PROMPT_FILES = [
