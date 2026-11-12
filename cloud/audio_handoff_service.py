@@ -13,7 +13,7 @@ from cloud import audio_handoff as handoff
 from cloud import audio_service as audio
 from cloud.acceptance import json_sha256, load_accepted_script
 from cloud.storage import S3RunStorage
-
+from cloud.audio_completion import read_audio_completion
 
 def _aws_client(name):
     return boto3.client(
@@ -412,15 +412,9 @@ def submit_audio_service_start(
         "receipt_key": S3RunStorage._key(run_id, receipt_name),
     }
 
-def retrieve_audio_service_start(
-    *, run_id, execution_arn, owner_token, lock_etag,
-    bucket=None, client=None, ssm_client=None,
-):
-    """Poll the saved startup command without submitting or restarting."""
-    storage, payload, _ = _context(
-        run_id, execution_arn, owner_token, lock_etag, bucket, client,
-        request_required=False,
-    )
+def _load_startup_records(storage, payload):
+    """Validate saved startup records without a live polling deadline."""
+    run_id = payload["run_id"]
     request_name = "audio_service_start_request.json"
     claim_name = "audio_service_start_submission_claim.json"
     request = storage.read_json(run_id, request_name)
@@ -479,6 +473,22 @@ def retrieve_audio_service_start(
     now = datetime.now(timezone.utc)
     if requested > now:
         raise ValueError("Startup submission timestamp is in the future")
+
+    return request, claim, receipt, requested
+
+
+def retrieve_audio_service_start(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ssm_client=None,
+):
+    """Poll the saved startup command without submitting or restarting."""
+    storage, payload, _ = _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client,
+        request_required=False,
+    )
+    request, claim, receipt, requested = _load_startup_records(storage, payload)
+    command_id = receipt["command_id"]
+    now = datetime.now(timezone.utc)
     if now - requested >= timedelta(seconds=600):
         raise TimeoutError("Startup polling deadline exceeded; reconcile SSM")
 
@@ -564,4 +574,161 @@ def retrieve_audio_service_start(
     return {
         **result,
         "result_key": S3RunStorage._key(run_id, result_name),
+    }
+
+def _load_startup_acknowledgement(storage, payload):
+    """Verify saved acknowledgement evidence without contacting SSM."""
+    request, claim, receipt, requested = _load_startup_records(storage, payload)
+    run_id = payload["run_id"]
+    base = {
+        **payload,
+        "command_id": receipt["command_id"],
+        "generation_requested": True,
+    }
+    evidence_name = "audio_service_start_invocation.json"
+    evidence_key = S3RunStorage._key(run_id, evidence_name)
+    evidence = storage.read_json(run_id, evidence_name)
+    result = storage.read_json(run_id, "audio_service_start_result.json")
+
+    if not isinstance(evidence, dict) or not isinstance(result, dict):
+        raise ValueError("Expected saved startup acknowledgement evidence")
+
+    invocation = evidence.get("invocation")
+    if (
+        not isinstance(invocation, dict)
+        or evidence != {
+            **base,
+            "submitted_at": claim["requested_at"],
+            "invocation": invocation,
+        }
+        or evidence.get("generation_requested") is not True
+    ):
+        raise ValueError("Saved startup evidence does not match ownership")
+
+    expected_identity = {
+        "CommandId": receipt["command_id"],
+        "InstanceId": audio.AUDIO_INSTANCE_ID,
+        "DocumentName": request["DocumentName"],
+        "Comment": request["Comment"],
+        "Status": "Success",
+        "StatusDetails": "Success",
+    }
+    if (
+        any(
+            invocation.get(key) != value
+            for key, value in expected_identity.items()
+        )
+        or type(invocation.get("ResponseCode")) is not int
+        or invocation["ResponseCode"] != 0
+        or invocation.get("StandardErrorContent") != ""
+    ):
+        raise ValueError("Saved SSM evidence does not confirm clean startup")
+
+    output = _output(
+        invocation.get("StandardOutputContent"), payload, startup=True
+    )
+    started = _timestamp(invocation.get("ExecutionStartDateTime"))
+    finished = _timestamp(invocation.get("ExecutionEndDateTime"))
+    if not requested <= started <= finished <= datetime.now(timezone.utc):
+        raise ValueError("Saved startup execution timing is invalid")
+
+    expected_result = {
+        **base,
+        **output,
+        "execution_started_at": started.isoformat(),
+        "execution_finished_at": finished.isoformat(),
+        "evidence_key": evidence_key,
+    }
+    if (
+        result != expected_result
+        or result.get("generation_requested") is not True
+    ):
+        raise ValueError("Saved startup result differs from invocation evidence")
+
+    guest_claim = storage.read_json(
+        run_id, "audio_service_start_execution_claim.json"
+    )
+    if not isinstance(guest_claim, dict):
+        raise ValueError("Expected the guest service startup claim")
+
+    if (
+        guest_claim != {
+            **payload,
+            "requested_at": guest_claim.get("requested_at"),
+            "automatic_retry_allowed": False,
+            "generation_requested": True,
+        }
+        or guest_claim.get("automatic_retry_allowed") is not False
+        or guest_claim.get("generation_requested") is not True
+    ):
+        raise ValueError("Guest startup claim does not match ownership")
+
+    guest_requested = _timestamp(guest_claim["requested_at"])
+    if not started <= guest_requested <= finished:
+        raise ValueError("Guest startup claim is outside the startup execution")
+
+    return {
+        "requested_at": guest_requested.isoformat(),
+        "submission_sha256": json_sha256(receipt),
+        "execution_claim_sha256": json_sha256(guest_claim),
+        "acknowledgement_sha256": json_sha256(result),
+        "invocation_sha256": json_sha256(evidence),
+    }
+
+
+def check_audio_completion(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None,
+):
+    """Verify completion for the owned job without starting or polling SSM."""
+    storage, payload, _ = _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client,
+        request_required=False,
+    )
+    startup = _load_startup_acknowledgement(storage, payload)
+    job = storage.read_json(run_id, "audio_job.json")
+    accepted = load_accepted_script(run_id=run_id, storage=storage)
+
+    if (
+        not isinstance(job, dict)
+        or job.get("run_id") != run_id
+        or job.get("bucket") != storage.bucket
+        or job.get("region") != audio.AUDIO_REGION
+        or json_sha256(job) != payload["job_sha256"]
+        or accepted["acceptance"]["script_sha256"] != payload["script_sha256"]
+    ):
+        raise ValueError("Completion job or accepted script changed")
+
+    completion = read_audio_completion(
+        run_id=run_id,
+        job=job,
+        job_sha256=payload["job_sha256"],
+        script_acceptance=accepted["acceptance"],
+        startup_requested_at=startup["requested_at"],
+        client=storage.client,
+    )
+    result = {
+        **payload,
+        **completion,
+        "startup": startup,
+    }
+    if completion["status"] == "audio_completion_pending":
+        return result
+    if completion["status"] != "audio_completion_verified":
+        raise ValueError("Unexpected audio completion reader status")
+
+    # Recheck ownership after downloading and hashing the completed artifacts.
+    audio._verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=storage.bucket,
+        client=storage.client,
+    )
+    filename = "audio_completion_result.json"
+    storage.preserve_json(run_id, filename, result)
+    return {
+        **result,
+        "result_key": S3RunStorage._key(run_id, filename),
     }

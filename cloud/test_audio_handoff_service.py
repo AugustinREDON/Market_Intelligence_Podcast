@@ -177,6 +177,172 @@ class AudioHandoffServiceTests(unittest.TestCase):
         request["ssm_client"].reset_mock()
         return request, objects
 
+    def make_completion_request(self):
+        request, objects = self.make_start_retrieval()
+        service.retrieve_audio_service_start(**request)
+        invocation = request["ssm_client"].get_command_invocation.return_value
+        objects[
+            self.prefix + "audio_service_start_execution_claim.json"
+        ] = json.dumps({
+            **self.payload,
+            "requested_at": invocation["ExecutionStartDateTime"],
+            "automatic_retry_allowed": False,
+            "generation_requested": True,
+        }).encode()
+        request["client"].reset_mock()
+        request["ssm_client"].reset_mock()
+        arguments = {
+            key: value for key, value in request.items()
+            if key != "ssm_client"
+        }
+        return arguments, objects, request["ssm_client"]
+
+    def test_completion_preserves_verified_success_without_ssm(self):
+        request, objects, ssm = self.make_completion_request()
+        completed = {
+            "status": "audio_completion_verified",
+            "run_id": self.run_id,
+            "job_sha256": self.payload["job_sha256"],
+            "script_sha256": self.payload["script_sha256"],
+        }
+        with patch.object(
+            service, "read_audio_completion", return_value=completed
+        ) as reader:
+            result = service.check_audio_completion(**request)
+            self.assertEqual(service.check_audio_completion(**request), result)
+
+        self.assertEqual(result["status"], "audio_completion_verified")
+        self.assertIn(result["result_key"], objects)
+        self.assertEqual(
+            reader.call_args.kwargs["script_acceptance"],
+            self.accepted.return_value["acceptance"],
+        )
+        guest = json.loads(objects[
+            self.prefix + "audio_service_start_execution_claim.json"
+        ])
+        self.assertEqual(
+            reader.call_args.kwargs["startup_requested_at"],
+            guest["requested_at"],
+        )
+        self.assertEqual(ssm.mock_calls, [])
+
+    def test_completion_pending_does_not_write(self):
+        request, objects, ssm = self.make_completion_request()
+        with patch.object(service, "read_audio_completion", return_value={
+            "status": "audio_completion_pending",
+            "reason": "permanent_claim_missing",
+        }):
+            result = service.check_audio_completion(**request)
+
+        self.assertEqual(result["status"], "audio_completion_pending")
+        request["client"].put_object.assert_not_called()
+        self.assertNotIn(self.prefix + "audio_completion_result.json", objects)
+        self.assertEqual(ssm.mock_calls, [])
+
+    def test_completion_does_not_reapply_startup_polling_deadline(self):
+        request, objects, ssm = self.make_completion_request()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        for filename in (
+            "audio_service_start_submission_claim.json",
+            "audio_service_start_submission.json",
+        ):
+            record = json.loads(objects[self.prefix + filename])
+            record["requested_at"] = old
+            objects[self.prefix + filename] = json.dumps(record).encode()
+
+        name = self.prefix + "audio_service_start_invocation.json"
+        evidence = json.loads(objects[name])
+        evidence["submitted_at"] = old
+        objects[name] = json.dumps(evidence).encode()
+
+        with patch.object(service, "read_audio_completion", return_value={
+            "status": "audio_completion_pending",
+            "reason": "success_marker_missing",
+        }) as reader:
+            result = service.check_audio_completion(**request)
+
+        self.assertEqual(result["status"], "audio_completion_pending")
+        reader.assert_called_once()
+        self.assertEqual(ssm.mock_calls, [])
+
+    def test_completion_rejects_changed_context_before_reading_artifacts(self):
+        for filename, field, value in (
+            ("audio_handoff.json", "owner_token", "wrong"),
+            ("audio_service_start_request.json", "Comment", "wrong"),
+            ("audio_service_start_submission_claim.json", "request_sha256", "0" * 64),
+            ("audio_service_start_submission.json", "command_id", "invalid"),
+            ("audio_service_start_result.json", "status", "audio_service_start_failed"),
+            ("audio_service_start_execution_claim.json", "generation_requested", 1),
+            ("audio_job.json", "bucket", "wrong"),
+        ):
+            with self.subTest(filename=filename, field=field):
+                request, objects, ssm = self.make_completion_request()
+                record = json.loads(objects[self.prefix + filename])
+                record[field] = value
+                objects[self.prefix + filename] = json.dumps(record).encode()
+                with patch.object(service, "read_audio_completion") as reader:
+                    with self.assertRaises(ValueError):
+                        service.check_audio_completion(**request)
+                reader.assert_not_called()
+                request["client"].put_object.assert_not_called()
+                self.assertEqual(ssm.mock_calls, [])
+
+    def test_completion_rejects_changed_invocation_and_acceptance(self):
+        for scenario in ("invocation", "acceptance"):
+            with self.subTest(scenario=scenario):
+                request, objects, ssm = self.make_completion_request()
+                if scenario == "invocation":
+                    name = self.prefix + "audio_service_start_invocation.json"
+                    evidence = json.loads(objects[name])
+                    evidence["invocation"]["ResponseCode"] = 1
+                    objects[name] = json.dumps(evidence).encode()
+                else:
+                    self.accepted.return_value = {
+                        "acceptance": {"script_sha256": "e" * 64}
+                    }
+
+                with patch.object(service, "read_audio_completion") as reader:
+                    with self.assertRaises(ValueError):
+                        service.check_audio_completion(**request)
+                reader.assert_not_called()
+                request["client"].put_object.assert_not_called()
+                self.assertEqual(ssm.mock_calls, [])
+
+    def test_completion_reader_errors_do_not_save_success(self):
+        request, objects, ssm = self.make_completion_request()
+        with patch.object(
+            service, "read_audio_completion",
+            side_effect=ValueError("Corrupt completed artifact"),
+        ):
+            with self.assertRaises(ValueError):
+                service.check_audio_completion(**request)
+        request["client"].put_object.assert_not_called()
+        self.assertNotIn(self.prefix + "audio_completion_result.json", objects)
+        self.assertEqual(ssm.mock_calls, [])
+
+    def test_lambda_routes_completion_with_ownership(self):
+        from cloud.lambda_function import lambda_handler
+
+        event = {
+            "action": "check_audio_completion",
+            **{
+                key: self.payload[key] for key in (
+                    "run_id", "execution_arn", "owner_token", "lock_etag"
+                )
+            },
+        }
+        with patch.object(
+            service, "check_audio_completion",
+            return_value={"status": "audio_completion_pending"},
+        ) as operation:
+            result = lambda_handler(event, None)
+
+        self.assertEqual(result["status"], "audio_completion_pending")
+        operation.assert_called_once_with(**{
+            key: value for key, value in event.items() if key != "action"
+        })
+
+
     def test_start_retrieval_uses_saved_request_and_preserves_acknowledgement(self):
         request, objects = self.make_start_retrieval()
         with patch.object(
