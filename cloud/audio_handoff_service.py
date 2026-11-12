@@ -732,3 +732,76 @@ def check_audio_completion(
         **result,
         "result_key": S3RunStorage._key(run_id, filename),
     }
+
+AUDIO_COMPLETION_TIMEOUT_SECONDS = 60 * 60
+
+
+def monitor_audio_completion(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ec2_client=None,
+):
+    """Check completion, then bound waiting using EC2 state and elapsed time."""
+    completion = check_audio_completion(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+    if completion["status"] == "audio_completion_verified":
+        return completion
+    if completion["status"] != "audio_completion_pending":
+        raise ValueError("Unexpected completion status during monitoring")
+
+    # Recheck ownership before inspecting the fixed worker instance.
+    _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client,
+        request_required=False,
+    )
+    requested = _timestamp(completion["startup"]["requested_at"])
+    observed = datetime.now(timezone.utc)
+    if requested > observed:
+        raise ValueError("Audio startup timestamp is in the future")
+
+    ec2_client = ec2_client if ec2_client is not None else _aws_client("ec2")
+    description = ec2_client.describe_instances(
+        InstanceIds=[audio.AUDIO_INSTANCE_ID]
+    )
+    instances = [
+        instance
+        for reservation in description.get("Reservations", [])
+        for instance in reservation.get("Instances", [])
+    ]
+    if (
+        len(instances) != 1
+        or instances[0].get("InstanceId") != audio.AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected audio instance")
+
+    state = instances[0].get("State", {}).get("Name")
+    if state not in {"running", "stopping", "stopped"}:
+        raise ValueError(f"Unexpected instance state after audio startup: {state}")
+
+    elapsed = (observed - requested).total_seconds()
+    result = {
+        **completion,
+        "instance_state": state,
+        "observed_at": observed.isoformat(),
+        "elapsed_seconds": elapsed,
+        "timeout_seconds": AUDIO_COMPLETION_TIMEOUT_SECONDS,
+    }
+    if state in {"stopping", "stopped"}:
+        return {
+            **result,
+            "status": "audio_worker_stopped_without_completion",
+        }
+    if elapsed >= AUDIO_COMPLETION_TIMEOUT_SECONDS:
+        return {
+            **result,
+            "status": "audio_completion_deadline_exceeded",
+        }
+    return {
+        **result,
+        "status": "audio_completion_waiting",
+    }

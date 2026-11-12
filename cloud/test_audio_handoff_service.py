@@ -197,6 +197,136 @@ class AudioHandoffServiceTests(unittest.TestCase):
         }
         return arguments, objects, request["ssm_client"]
 
+    def test_monitor_classifies_pending_completion_without_mutations(self):
+        for state, age_minutes, expected in (
+            ("running", 20, "audio_completion_waiting"),
+            ("running", 60, "audio_completion_deadline_exceeded"),
+            ("stopping", 20, "audio_worker_stopped_without_completion"),
+            ("stopped", 20, "audio_worker_stopped_without_completion"),
+        ):
+            with self.subTest(state=state, age_minutes=age_minutes):
+                request, objects, ssm = self.make_completion_request()
+                ec2 = Mock()
+                ec2.describe_instances.return_value = {
+                    "Reservations": [{
+                        "Instances": [{
+                            "InstanceId": service.audio.AUDIO_INSTANCE_ID,
+                            "State": {"Name": state},
+                        }]
+                    }]
+                }
+                pending = {
+                    "status": "audio_completion_pending",
+                    "reason": "permanent_claim_missing",
+                    "startup": {
+                        "requested_at": (
+                            datetime.now(timezone.utc)
+                            - timedelta(minutes=age_minutes)
+                        ).isoformat(),
+                    },
+                }
+                with patch.object(
+                    service, "check_audio_completion", return_value=pending
+                ):
+                    result = service.monitor_audio_completion(
+                        **request, ec2_client=ec2
+                    )
+
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["reason"], "permanent_claim_missing")
+                ec2.describe_instances.assert_called_once_with(
+                    InstanceIds=[service.audio.AUDIO_INSTANCE_ID]
+                )
+                ec2.start_instances.assert_not_called()
+                ec2.stop_instances.assert_not_called()
+                request["client"].put_object.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+                self.assertEqual(ssm.mock_calls, [])
+
+    def test_monitor_returns_verified_completion_without_ec2(self):
+        request, objects, ssm = self.make_completion_request()
+        ec2 = Mock()
+        verified = {"status": "audio_completion_verified"}
+        with patch.object(
+            service, "check_audio_completion", return_value=verified
+        ):
+            result = service.monitor_audio_completion(
+                **request, ec2_client=ec2
+            )
+
+        self.assertEqual(result, verified)
+        self.assertEqual(ec2.mock_calls, [])
+
+    def test_monitor_rejects_wrong_ownership_before_ec2(self):
+        request, objects, ssm = self.make_completion_request()
+        request["owner_token"] = "wrong"
+        ec2 = Mock()
+        with self.assertRaises(ValueError):
+            service.monitor_audio_completion(**request, ec2_client=ec2)
+        self.assertEqual(ec2.mock_calls, [])
+
+    def test_monitor_rejects_unexpected_instance_and_propagates_access_errors(self):
+        for scenario in ("wrong_instance", "unexpected_state", "access"):
+            with self.subTest(scenario=scenario):
+                request, objects, ssm = self.make_completion_request()
+                ec2 = Mock()
+                ec2.describe_instances.return_value = {
+                    "Reservations": [{
+                        "Instances": [{
+                            "InstanceId": (
+                                "i-wrong" if scenario == "wrong_instance"
+                                else service.audio.AUDIO_INSTANCE_ID
+                            ),
+                            "State": {
+                                "Name": (
+                                    "pending" if scenario == "unexpected_state"
+                                    else "running"
+                                )
+                            },
+                        }]
+                    }]
+                }
+                if scenario == "access":
+                    ec2.describe_instances.side_effect = ClientError(
+                        {"Error": {"Code": "UnauthorizedOperation"}},
+                        "DescribeInstances",
+                    )
+                pending = {
+                    "status": "audio_completion_pending",
+                    "startup": {
+                        "requested_at": datetime.now(timezone.utc).isoformat()
+                    },
+                }
+                with patch.object(
+                    service, "check_audio_completion", return_value=pending
+                ):
+                    error = ClientError if scenario == "access" else ValueError
+                    with self.assertRaises(error):
+                        service.monitor_audio_completion(
+                            **request, ec2_client=ec2
+                        )
+                ec2.stop_instances.assert_not_called()
+
+    def test_lambda_routes_completion_monitor(self):
+        from cloud.lambda_function import lambda_handler
+
+        arguments = {
+            key: self.payload[key] for key in (
+                "run_id", "execution_arn", "owner_token", "lock_etag"
+            )
+        }
+        with patch.object(
+            service, "monitor_audio_completion",
+            return_value={"status": "audio_completion_waiting"},
+        ) as operation:
+            result = lambda_handler(
+                {"action": "monitor_audio_completion", **arguments}, None
+            )
+
+        self.assertEqual(result["status"], "audio_completion_waiting")
+        operation.assert_called_once_with(**arguments)
+
+
     def test_completion_preserves_verified_success_without_ssm(self):
         request, objects, ssm = self.make_completion_request()
         completed = {
