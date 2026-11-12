@@ -300,3 +300,101 @@ def retrieve_audio_handoff(
         **result,
         "result_key": S3RunStorage._key(run_id, "audio_handoff_result.json"),
     }
+
+def submit_audio_service_start(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ssm_client=None,
+):
+    """Verify the handoff, claim once, and submit one startup command."""
+    storage, payload, request = _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client
+    )
+    ssm_client = ssm_client if ssm_client is not None else _aws_client("ssm")
+    verified = retrieve_audio_handoff(
+        run_id=run_id, execution_arn=execution_arn,
+        owner_token=owner_token, lock_etag=lock_etag,
+        bucket=storage.bucket, client=storage.client, ssm_client=ssm_client,
+    )
+    if verified["status"] != "audio_job_handed_off":
+        return verified
+    if (
+        any(verified.get(key) != value for key, value in payload.items())
+        or verified.get("generation_requested") is not False
+    ):
+        raise ValueError("Verified handoff does not match startup ownership")
+
+    job = storage.read_json(run_id, "audio_job.json")
+    accepted = load_accepted_script(run_id=run_id, storage=storage)
+    if (
+        json_sha256(job) != payload["job_sha256"]
+        or accepted["acceptance"]["script_sha256"] != payload["script_sha256"]
+    ):
+        raise ValueError("Startup job or accepted script changed")
+
+    try:
+        storage.client.head_object(
+            Bucket=storage.bucket,
+            Key=S3RunStorage._key(run_id, "audio_submission_claim.json"),
+        )
+    except ClientError as error:
+        if error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") != 404:
+            raise
+    else:
+        raise ValueError("This run already has a permanent audio claim")
+
+    request["Comment"] = f'MIP service start {payload["handoff_token"]}'
+    request["Parameters"] = {
+        **request["Parameters"],
+        "commands": [handoff.build_audio_service_start_command(payload)],
+    }
+    request["OutputS3KeyPrefix"] = (
+        f'runs/{run_id}/audio/service-start/{payload["handoff_token"]}'
+    )
+
+    # Preserve the exact command for later verification and recovery.
+    request_name = "audio_service_start_request.json"
+    storage.preserve_json(run_id, request_name, request)
+
+    claim = {
+        **payload,
+        "handoff_sha256": json_sha256(payload),
+        "handoff_command_id": _command_id(verified["command_id"]),
+        "request_key": S3RunStorage._key(run_id, request_name),
+        "request_sha256": json_sha256(request),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "automatic_retry_allowed": False,
+        "generation_requested": True,
+    }
+    claim_name = "audio_service_start_submission_claim.json"
+    claim_key = S3RunStorage._key(run_id, claim_name)
+    _put_once(storage, run_id, claim_name, claim)
+
+    response = ssm_client.send_command(**request)
+    submitted = response.get("Command") if isinstance(response, dict) else None
+    if not isinstance(submitted, dict):
+        raise RuntimeError("Service startup submission uncertain; reconcile SSM")
+    try:
+        command_id = _command_id(submitted.get("CommandId"))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise RuntimeError(
+            "Service startup submission uncertain; reconcile SSM"
+        ) from error
+    if (
+        submitted.get("InstanceIds") != [audio.AUDIO_INSTANCE_ID]
+        or submitted.get("DocumentName") != request["DocumentName"]
+        or submitted.get("Comment") != request["Comment"]
+    ):
+        raise RuntimeError("Service startup submission uncertain; reconcile SSM")
+
+    receipt = {
+        **claim,
+        "status": "audio_service_start_submitted",
+        "command_id": command_id,
+        "claim_key": claim_key,
+    }
+    receipt_name = "audio_service_start_submission.json"
+    _put_once(storage, run_id, receipt_name, receipt)
+    return {
+        **receipt,
+        "receipt_key": S3RunStorage._key(run_id, receipt_name),
+    }

@@ -120,6 +120,127 @@ class AudioHandoffServiceTests(unittest.TestCase):
             ssm.reset_mock()
         return request, objects
 
+    def make_start_request(self):
+        request, objects = self.make_request(submitted=True)
+        client, ssm = request["client"], request["ssm_client"]
+        client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "404"},
+             "ResponseMetadata": {"HTTPStatusCode": 404}}, "HeadObject"
+        )
+
+        def send(**kwargs):
+            claim = json.loads(objects[
+                self.prefix + "audio_service_start_submission_claim.json"
+            ])
+            self.assertEqual(claim["request_sha256"], json_sha256(kwargs))
+            self.assertEqual(json.loads(objects[claim["request_key"]]), kwargs)
+            self.assertIs(claim["automatic_retry_allowed"], False)
+            self.assertIs(claim["generation_requested"], True)
+            return {"Command": {
+                "CommandId": self.command_id,
+                "InstanceIds": kwargs["InstanceIds"],
+                "DocumentName": kwargs["DocumentName"],
+                "Comment": kwargs["Comment"],
+            }}
+
+        ssm.send_command.side_effect = send
+        return request, objects
+
+    def test_service_start_preserves_request_claim_and_receipt(self):
+        request, objects = self.make_start_request()
+        result = service.submit_audio_service_start(**request)
+        self.assertEqual(result["status"], "audio_service_start_submitted")
+        saved = json.loads(objects[result["request_key"]])
+        self.assertEqual(saved["InstanceIds"], [service.audio.AUDIO_INSTANCE_ID])
+        self.assertTrue(saved["Parameters"]["commands"][0].endswith(" start"))
+        self.assertEqual(
+            json.loads(objects[result["receipt_key"]])["command_id"],
+            self.command_id,
+        )
+        request["ssm_client"].send_command.assert_called_once()
+
+    def test_service_start_requires_handoff_job_and_absent_audio_claim(self):
+        for scenario in ("pending", "job", "existing_audio", "denied", "owner"):
+            with self.subTest(scenario=scenario):
+                request, objects = self.make_start_request()
+                if scenario == "pending":
+                    request["ssm_client"].get_command_invocation.return_value[
+                        "Status"
+                    ] = "InProgress"
+                elif scenario == "job":
+                    objects[self.prefix + "audio_job.json"] = b"{}"
+                elif scenario == "existing_audio":
+                    request["client"].head_object.side_effect = None
+                elif scenario == "denied":
+                    request["client"].head_object.side_effect = ClientError(
+                        {"Error": {"Code": "AccessDenied"},
+                         "ResponseMetadata": {"HTTPStatusCode": 403}},
+                        "HeadObject",
+                    )
+                else:
+                    request["owner_token"] = "wrong"
+
+                if scenario == "pending":
+                    result = service.submit_audio_service_start(**request)
+                    self.assertEqual(result["status"], "audio_handoff_pending")
+                else:
+                    error_type = ClientError if scenario == "denied" else ValueError
+                    with self.assertRaises(error_type):
+                        service.submit_audio_service_start(**request)
+                request["ssm_client"].send_command.assert_not_called()
+                self.assertNotIn(
+                    self.prefix + "audio_service_start_submission_claim.json",
+                    objects,
+                )
+
+    def test_service_start_existing_or_uncertain_submission_never_resends(self):
+        for scenario in ("existing", "claim", "send", "malformed", "receipt"):
+            with self.subTest(scenario=scenario):
+                request, objects = self.make_start_request()
+                client, ssm = request["client"], request["ssm_client"]
+                claim_key = (
+                    self.prefix + "audio_service_start_submission_claim.json"
+                )
+                if scenario == "existing":
+                    objects[claim_key] = b"{}"
+                elif scenario in {"claim", "receipt"}:
+                    original_put = client.put_object.side_effect
+                    fail_key = (
+                        claim_key if scenario == "claim"
+                        else self.prefix + "audio_service_start_submission.json"
+                    )
+
+                    def uncertain_put(**kwargs):
+                        result = original_put(**kwargs)
+                        if kwargs["Key"] == fail_key:
+                            raise TimeoutError("uncertain startup write")
+                        return result
+
+                    client.put_object.side_effect = uncertain_put
+                elif scenario == "send":
+                    ssm.send_command.side_effect = TimeoutError("uncertain send")
+                else:
+                    ssm.send_command.side_effect = None
+                    ssm.send_command.return_value = {"Command": {}}
+
+                expected = (
+                    ClientError if scenario == "existing"
+                    else RuntimeError if scenario == "malformed"
+                    else TimeoutError
+                )
+                with self.assertRaises(expected):
+                    service.submit_audio_service_start(**request)
+                self.assertIn(claim_key, objects)
+                self.assertEqual(
+                    ssm.send_command.call_count,
+                    0 if scenario in {"existing", "claim"} else 1,
+                )
+
+                ssm.send_command.reset_mock()
+                with self.assertRaises(ClientError):
+                    service.submit_audio_service_start(**request)
+                ssm.send_command.assert_not_called()
+
     def test_submission_claim_precedes_send_and_receipt_is_saved(self):
         request, objects = self.make_request()
         result = service.submit_audio_handoff(**request)
@@ -380,7 +501,11 @@ class AudioHandoffServiceTests(unittest.TestCase):
                 "run_id", "execution_arn", "owner_token", "lock_etag"
             )
         }
-        for action in ("submit_audio_handoff", "retrieve_audio_handoff"):
+        for action in (
+            "submit_audio_handoff",
+            "retrieve_audio_handoff",
+            "submit_audio_service_start",
+        ):
             with self.subTest(action=action):
                 expected = {"status": "offline"}
                 with patch.object(service, action, return_value=expected) as method:

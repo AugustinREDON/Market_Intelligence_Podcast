@@ -6,7 +6,11 @@ from time import perf_counter
 
 def lambda_handler(event, context):
 
-    if event.get("action") in {"submit_audio_handoff", "retrieve_audio_handoff"}:
+    if event.get("action") in {
+        "submit_audio_handoff",
+        "retrieve_audio_handoff",
+        "submit_audio_service_start",
+    }:
         from cloud import audio_handoff_service
 
         operation = getattr(audio_handoff_service, event["action"])
