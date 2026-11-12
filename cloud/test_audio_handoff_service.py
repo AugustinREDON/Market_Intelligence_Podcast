@@ -146,6 +146,165 @@ class AudioHandoffServiceTests(unittest.TestCase):
         ssm.send_command.side_effect = send
         return request, objects
 
+    def make_start_retrieval(self):
+        request, objects = self.make_start_request()
+        submitted = service.submit_audio_service_start(**request)
+        saved = json.loads(objects[submitted["request_key"]])
+        now = datetime.now(timezone.utc).isoformat()
+        request["ssm_client"].get_command_invocation.return_value = {
+            "CommandId": submitted["command_id"],
+            "InstanceId": service.audio.AUDIO_INSTANCE_ID,
+            "DocumentName": saved["DocumentName"],
+            "Comment": saved["Comment"],
+            "Status": "Success",
+            "StatusDetails": "Success",
+            "ResponseCode": 0,
+            "ExecutionStartDateTime": now,
+            "ExecutionEndDateTime": now,
+            "StandardErrorContent": "",
+            "StandardOutputContent": json.dumps({
+                **self.payload,
+                "status": "audio_service_start_acknowledged",
+                "startup_claim_key": (
+                    self.prefix + "audio_service_start_execution_claim.json"
+                ),
+                "bundle_sha256": service.handoff.BUNDLE_SHA256,
+                "installed_versions": service.handoff.EXPECTED_VERSIONS,
+                "generation_requested": True,
+            }),
+        }
+        request["client"].reset_mock()
+        request["ssm_client"].reset_mock()
+        return request, objects
+
+    def test_start_retrieval_uses_saved_request_and_preserves_acknowledgement(self):
+        request, objects = self.make_start_retrieval()
+        with patch.object(
+            service.handoff,
+            "build_audio_handoff_command",
+            side_effect=AssertionError("Retrieval must not rebuild commands"),
+        ):
+            result = service.retrieve_audio_service_start(**request)
+            self.assertEqual(service.retrieve_audio_service_start(**request), result)
+        self.assertEqual(result["status"], "audio_service_start_acknowledged")
+        self.assertIs(result["generation_requested"], True)
+        self.assertIn(result["result_key"], objects)
+        request["ssm_client"].get_command_invocation.assert_called_with(
+            CommandId=self.command_id, InstanceId=service.audio.AUDIO_INSTANCE_ID
+        )
+        request["ssm_client"].send_command.assert_not_called()
+
+    def test_start_retrieval_handles_pending_failure_and_access_errors(self):
+        for status in (
+            "Pending", "InProgress", "Delayed", "Cancelling", "missing",
+            "Failed", "TimedOut", "Cancelled", "denied",
+        ):
+            with self.subTest(status=status):
+                request, objects = self.make_start_retrieval()
+                ssm = request["ssm_client"]
+                if status in {"missing", "denied"}:
+                    code = (
+                        "InvocationDoesNotExist"
+                        if status == "missing" else "AccessDeniedException"
+                    )
+                    ssm.get_command_invocation.side_effect = ClientError(
+                        {"Error": {"Code": code}}, "GetCommandInvocation"
+                    )
+                else:
+                    ssm.get_command_invocation.return_value["Status"] = status
+
+                if status == "denied":
+                    with self.assertRaises(ClientError):
+                        service.retrieve_audio_service_start(**request)
+                else:
+                    result = service.retrieve_audio_service_start(**request)
+                    terminal = status in {"Failed", "TimedOut", "Cancelled"}
+                    self.assertEqual(
+                        result["status"],
+                        "audio_service_start_failed" if terminal
+                        else "audio_service_start_pending",
+                    )
+                    if terminal:
+                        self.assertIn(result["evidence_key"], objects)
+                ssm.send_command.assert_not_called()
+                ssm.cancel_command.assert_not_called()
+
+    def test_start_retrieval_rejects_changed_saved_records_before_ssm(self):
+        for filename, field, value in (
+            ("audio_service_start_request.json", "Comment", "wrong"),
+            ("audio_service_start_submission_claim.json", "request_sha256", "0" * 64),
+            ("audio_service_start_submission_claim.json", "generation_requested", 1),
+            ("audio_service_start_submission.json", "owner_token", "wrong"),
+            ("audio_service_start_submission.json", "command_id", "invalid"),
+            ("audio_service_start_submission.json", "automatic_retry_allowed", 0),
+        ):
+            with self.subTest(filename=filename, field=field):
+                request, objects = self.make_start_retrieval()
+                record = json.loads(objects[self.prefix + filename])
+                record[field] = value
+                objects[self.prefix + filename] = json.dumps(record).encode()
+                with self.assertRaises(ValueError):
+                    service.retrieve_audio_service_start(**request)
+                request["ssm_client"].get_command_invocation.assert_not_called()
+                request["ssm_client"].send_command.assert_not_called()
+
+    def test_start_retrieval_preserves_evidence_before_rejecting_bad_success(self):
+        for scenario in (
+            "boot", "flag", "duplicate", "nonzero", "stderr", "timing", "evidence",
+        ):
+            with self.subTest(scenario=scenario):
+                request, objects = self.make_start_retrieval()
+                invocation = request["ssm_client"].get_command_invocation.return_value
+                output = json.loads(invocation["StandardOutputContent"])
+                if scenario == "boot":
+                    output["boot_id"] = "34567890-1234-1234-1234-123456789abc"
+                elif scenario == "flag":
+                    output["generation_requested"] = 1
+                elif scenario == "nonzero":
+                    invocation["ResponseCode"] = 1
+                elif scenario == "stderr":
+                    invocation["StandardErrorContent"] = "unexpected"
+                elif scenario == "timing":
+                    invocation["ExecutionEndDateTime"] = (
+                        datetime.now(timezone.utc) + timedelta(minutes=1)
+                    ).isoformat()
+                elif scenario == "evidence":
+                    request["client"].put_object.side_effect = TimeoutError(
+                        "uncertain evidence"
+                    )
+                text = json.dumps(output)
+                if scenario == "duplicate":
+                    text = text[:-1] + ', "generation_requested": true}'
+                invocation["StandardOutputContent"] = text
+
+                error_type = TimeoutError if scenario == "evidence" else ValueError
+                with self.assertRaises(error_type):
+                    service.retrieve_audio_service_start(**request)
+                if scenario != "evidence":
+                    self.assertIn(
+                        self.prefix + "audio_service_start_invocation.json", objects
+                    )
+                self.assertNotIn(
+                    self.prefix + "audio_service_start_result.json", objects
+                )
+                request["ssm_client"].send_command.assert_not_called()
+
+    def test_start_retrieval_deadline_does_not_cancel_or_resubmit(self):
+        request, objects = self.make_start_retrieval()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+        for name in (
+            "audio_service_start_submission_claim.json",
+            "audio_service_start_submission.json",
+        ):
+            record = json.loads(objects[self.prefix + name])
+            record["requested_at"] = old
+            objects[self.prefix + name] = json.dumps(record).encode()
+        with self.assertRaises(TimeoutError):
+            service.retrieve_audio_service_start(**request)
+        request["ssm_client"].get_command_invocation.assert_not_called()
+        request["ssm_client"].send_command.assert_not_called()
+        request["ssm_client"].cancel_command.assert_not_called()
+
     def test_service_start_preserves_request_claim_and_receipt(self):
         request, objects = self.make_start_request()
         result = service.submit_audio_service_start(**request)
@@ -505,6 +664,7 @@ class AudioHandoffServiceTests(unittest.TestCase):
             "submit_audio_handoff",
             "retrieve_audio_handoff",
             "submit_audio_service_start",
+            "retrieve_audio_service_start",
         ):
             with self.subTest(action=action):
                 expected = {"status": "offline"}

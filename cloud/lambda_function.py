@@ -10,6 +10,7 @@ def lambda_handler(event, context):
         "submit_audio_handoff",
         "retrieve_audio_handoff",
         "submit_audio_service_start",
+        "retrieve_audio_service_start",
     }:
         from cloud import audio_handoff_service
 

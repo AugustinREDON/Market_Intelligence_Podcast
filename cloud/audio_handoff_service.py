@@ -26,7 +26,10 @@ def _aws_client(name):
     )
 
 
-def _context(run_id, execution_arn, owner_token, lock_etag, bucket, client):
+def _context(
+    run_id, execution_arn, owner_token, lock_etag, bucket, client,
+    *, request_required=True,
+):
     bucket = bucket or os.environ.get("MIP_S3_BUCKET")
     if not isinstance(bucket, str) or not bucket.strip():
         raise ValueError("MIP_S3_BUCKET must be configured")
@@ -46,6 +49,8 @@ def _context(run_id, execution_arn, owner_token, lock_etag, bucket, client):
     }
     if any(payload[key] != value for key, value in expected.items()):
         raise ValueError("Prepared handoff does not match current ownership")
+    if not request_required:
+        return storage, payload, None
     request = {
         "InstanceIds": [audio.AUDIO_INSTANCE_ID],
         "DocumentName": "AWS-RunShellScript",
@@ -160,7 +165,7 @@ def submit_audio_handoff(
     }
 
 
-def _output(text, payload):
+def _output(text, payload, *, startup=False):
     if not isinstance(text, str) or not 0 < len(text) <= 4096:
         raise ValueError("Missing or oversized handoff output")
 
@@ -185,12 +190,20 @@ def _output(text, payload):
         "installed_versions": handoff.EXPECTED_VERSIONS,
         "generation_requested": False,
     }
+    if startup:
+        expected.update(
+            status="audio_service_start_acknowledged",
+            startup_claim_key=S3RunStorage._key(
+                payload["run_id"], "audio_service_start_execution_claim.json"
+            ),
+            generation_requested=True,
+        )
     if (
         not isinstance(result, dict)
         or result != expected
-        or result.get("generation_requested") is not False
+        or result.get("generation_requested") is not expected["generation_requested"]
     ):
-        raise ValueError("Handoff output does not match the prepared job")
+        raise ValueError("Audio command output does not match the prepared job")
     return result
 
 
@@ -397,4 +410,158 @@ def submit_audio_service_start(
     return {
         **receipt,
         "receipt_key": S3RunStorage._key(run_id, receipt_name),
+    }
+
+def retrieve_audio_service_start(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ssm_client=None,
+):
+    """Poll the saved startup command without submitting or restarting."""
+    storage, payload, _ = _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client,
+        request_required=False,
+    )
+    request_name = "audio_service_start_request.json"
+    claim_name = "audio_service_start_submission_claim.json"
+    request = storage.read_json(run_id, request_name)
+    claim = storage.read_json(run_id, claim_name)
+    receipt = storage.read_json(run_id, "audio_service_start_submission.json")
+    if not all(isinstance(value, dict) for value in (request, claim, receipt)):
+        raise ValueError("Expected saved startup request, claim and receipt")
+
+    expected_claim = {
+        **payload,
+        "handoff_sha256": json_sha256(payload),
+        "handoff_command_id": _command_id(claim.get("handoff_command_id")),
+        "request_key": S3RunStorage._key(run_id, request_name),
+        "request_sha256": json_sha256(request),
+        "requested_at": claim.get("requested_at"),
+        "automatic_retry_allowed": False,
+        "generation_requested": True,
+    }
+    if (
+        claim != expected_claim
+        or claim.get("automatic_retry_allowed") is not False
+        or claim.get("generation_requested") is not True
+    ):
+        raise ValueError("Startup claim does not match its saved request")
+
+    command_id = _command_id(receipt.get("command_id"))
+    if (
+        receipt != {
+            **claim,
+            "status": "audio_service_start_submitted",
+            "command_id": command_id,
+            "claim_key": S3RunStorage._key(run_id, claim_name),
+        }
+        or receipt.get("automatic_retry_allowed") is not False
+        or receipt.get("generation_requested") is not True
+    ):
+        raise ValueError("Startup receipt does not match its claim")
+
+    expected_request_fields = {
+        "InstanceIds": [audio.AUDIO_INSTANCE_ID],
+        "DocumentName": "AWS-RunShellScript",
+        "Comment": f'MIP service start {payload["handoff_token"]}',
+        "OutputS3Region": audio.AUDIO_REGION,
+        "OutputS3BucketName": storage.bucket,
+        "OutputS3KeyPrefix": (
+            f'runs/{run_id}/audio/service-start/{payload["handoff_token"]}'
+        ),
+    }
+    if any(
+        request.get(key) != value
+        for key, value in expected_request_fields.items()
+    ):
+        raise ValueError("Saved startup request identity does not match")
+
+    requested = _timestamp(claim["requested_at"])
+    now = datetime.now(timezone.utc)
+    if requested > now:
+        raise ValueError("Startup submission timestamp is in the future")
+    if now - requested >= timedelta(seconds=600):
+        raise TimeoutError("Startup polling deadline exceeded; reconcile SSM")
+
+    base = {**payload, "command_id": command_id, "generation_requested": True}
+    ssm_client = ssm_client if ssm_client is not None else _aws_client("ssm")
+    try:
+        invocation = ssm_client.get_command_invocation(
+            CommandId=command_id, InstanceId=audio.AUDIO_INSTANCE_ID
+        )
+    except ClientError as error:
+        if error.response.get("Error", {}).get("Code") != "InvocationDoesNotExist":
+            raise
+        return {
+            **base, "status": "audio_service_start_pending",
+            "reason": "not_visible",
+        }
+
+    expected_identity = {
+        "CommandId": command_id,
+        "InstanceId": audio.AUDIO_INSTANCE_ID,
+        "DocumentName": request["DocumentName"],
+        "Comment": request["Comment"],
+    }
+    if any(
+        invocation.get(key) != value
+        for key, value in expected_identity.items()
+    ):
+        raise ValueError("SSM startup invocation identity does not match")
+
+    status = invocation.get("Status")
+    if status in {"Pending", "InProgress", "Delayed", "Cancelling"}:
+        return {
+            **base, "status": "audio_service_start_pending", "reason": status,
+        }
+    if status not in {"Success", "Failed", "TimedOut", "Cancelled"}:
+        raise ValueError(f"Unexpected startup invocation status: {status}")
+
+    fields = (
+        "CommandId", "InstanceId", "DocumentName", "Comment", "PluginName",
+        "Status", "StatusDetails", "ResponseCode",
+        "ExecutionStartDateTime", "ExecutionEndDateTime",
+        "StandardOutputContent", "StandardErrorContent",
+    )
+    evidence_name = "audio_service_start_invocation.json"
+    storage.preserve_json(run_id, evidence_name, {
+        **base,
+        "submitted_at": claim["requested_at"],
+        "invocation": {key: invocation.get(key) for key in fields},
+    })
+    evidence_key = S3RunStorage._key(run_id, evidence_name)
+
+    if status != "Success":
+        result = {
+            **base,
+            "status": "audio_service_start_failed",
+            "invocation_status": status,
+            "evidence_key": evidence_key,
+        }
+    else:
+        if (
+            invocation.get("StatusDetails") != "Success"
+            or type(invocation.get("ResponseCode")) is not int
+            or invocation["ResponseCode"] != 0
+            or invocation.get("StandardErrorContent") != ""
+        ):
+            raise ValueError("SSM did not confirm a clean startup execution")
+        output = _output(
+            invocation.get("StandardOutputContent"), payload, startup=True
+        )
+        started = _timestamp(invocation.get("ExecutionStartDateTime"))
+        finished = _timestamp(invocation.get("ExecutionEndDateTime"))
+        if not requested <= started <= finished <= datetime.now(timezone.utc):
+            raise ValueError("Startup execution timing does not match submission")
+        result = {
+            **base, **output,
+            "execution_started_at": started.isoformat(),
+            "execution_finished_at": finished.isoformat(),
+            "evidence_key": evidence_key,
+        }
+
+    result_name = "audio_service_start_result.json"
+    storage.preserve_json(run_id, result_name, result)
+    return {
+        **result,
+        "result_key": S3RunStorage._key(run_id, result_name),
     }
