@@ -3,9 +3,14 @@
 import copy
 from datetime import datetime, timezone, timedelta
 import unittest
+import hashlib
+import io
+import json
 
+from botocore.exceptions import ClientError
+from unittest.mock import Mock
 from cloud.acceptance import json_sha256
-from cloud.audio_completion import validate_audio_success
+from cloud.audio_completion import validate_audio_success, read_audio_completion
 
 
 class AudioCompletionTests(unittest.TestCase):
@@ -141,6 +146,145 @@ class AudioCompletionTests(unittest.TestCase):
         changed = {**self.job, "bucket": "another-bucket"}
         with self.assertRaises(ValueError):
             self.verify(job=changed, job_sha256=json_sha256(self.job))
+
+    def make_reader(self):
+        script = b"HOST_A: Offline fixture\nHOST_B: Reply"
+        self.script_hash = hashlib.sha256(script).hexdigest()
+        self.claim["script_sha256"] = self.script_hash
+        self.success["script_sha256"] = self.script_hash
+        acceptance = {"script_sha256": self.script_hash, "dialogue_line_count": 2}
+        report = {
+            key: value for key, value in self.success.items()
+            if key not in {"mp3_key", "wav_key", "artifacts"}
+        }
+        report["status"] = "render_completed"
+        rendered = {
+            "status": "render_completed", "script_sha256": self.script_hash,
+            "duration_seconds": self.success["duration_seconds"],
+            "expected_dialogue_lines": 2, "completed_dialogue_lines": 2,
+        }
+        encode = lambda value: json.dumps(value).encode()
+        files = {
+            "audio_job.json": encode(self.job),
+            "verified_script_acceptance.json": encode(acceptance),
+            "job_result.json": encode(report),
+            "render/script.md": script,
+            "render/render_result.json": encode(rendered),
+            "render/episode.mp3": b"offline MP3",
+            "render/episode.wav": b"offline WAV",
+        }
+        objects = {self.prefix + name: raw for name, raw in files.items()}
+        for artifact in self.success["artifacts"]:
+            raw = objects[artifact["key"]]
+            artifact.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+        objects[self.prefix + "audio_success.json"] = encode(self.success)
+        objects[f"runs/{self.run_id}/audio_submission_claim.json"] = encode(self.claim)
+        client = Mock()
+
+        def read(**kwargs):
+            key = kwargs["Key"]
+            if key not in objects:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey"},
+                     "ResponseMetadata": {"HTTPStatusCode": 404}}, "GetObject"
+                )
+            raw = objects[key]
+            return {"Body": io.BytesIO(raw), "ContentLength": len(raw)}
+
+        client.get_object.side_effect = read
+        arguments = {
+            "run_id": self.run_id, "job": self.job,
+            "job_sha256": json_sha256(self.job), "script_acceptance": acceptance,
+            "startup_requested_at": self.startup, "client": client,
+        }
+        return arguments, objects
+
+    def test_reader_verifies_required_files_without_writing(self):
+        arguments, objects = self.make_reader()
+        result = read_audio_completion(**arguments)
+        self.assertEqual(result["status"], "audio_completion_verified")
+        self.assertEqual(result["success_key"], self.prefix + "audio_success.json")
+        self.assertEqual(arguments["client"].get_object.call_count, 9)
+        arguments["client"].put_object.assert_not_called()
+        arguments["client"].list_objects_v2.assert_not_called()
+
+    def test_reader_missing_claim_or_marker_is_only_pending(self):
+        for missing in ("claim", "marker"):
+            with self.subTest(missing=missing):
+                arguments, objects = self.make_reader()
+                key = (
+                    f"runs/{self.run_id}/audio_submission_claim.json"
+                    if missing == "claim" else self.prefix + "audio_success.json"
+                )
+                del objects[key]
+                result = read_audio_completion(**arguments)
+                self.assertEqual(result["status"], "audio_completion_pending")
+                arguments["client"].put_object.assert_not_called()
+
+    def test_reader_access_errors_and_missing_bucket_are_not_pending(self):
+        for status, code in ((403, "AccessDenied"), (404, "NoSuchBucket")):
+            with self.subTest(code=code):
+                arguments, _ = self.make_reader()
+                arguments["client"].get_object.side_effect = ClientError(
+                    {"Error": {"Code": code},
+                     "ResponseMetadata": {"HTTPStatusCode": status}}, "GetObject"
+                )
+                with self.assertRaises(ClientError):
+                    read_audio_completion(**arguments)
+
+    def test_reader_rejects_corrupt_or_missing_required_artifacts(self):
+        for scenario in ("hash", "size", "missing"):
+            with self.subTest(scenario=scenario):
+                arguments, objects = self.make_reader()
+                key = self.prefix + "render/episode.mp3"
+                if scenario == "hash":
+                    objects[key] = b"x" * len(objects[key])
+                elif scenario == "size":
+                    objects[key] += b"x"
+                else:
+                    del objects[key]
+                error_type = ClientError if scenario == "missing" else ValueError
+                with self.assertRaises(error_type):
+                    read_audio_completion(**arguments)
+
+    def test_reader_rejects_invalid_json_and_claim_before_attempt_lookup(self):
+        for raw in (
+            b'{"attempt_id": "a", "attempt_id": "b"}',
+            b'{"attempt_id": NaN}',
+            b'null',
+            b'{"attempt_id": "../another-attempt"}',
+        ):
+            with self.subTest(raw=raw):
+                arguments, objects = self.make_reader()
+                objects[f"runs/{self.run_id}/audio_submission_claim.json"] = raw
+                with self.assertRaises(ValueError):
+                    read_audio_completion(**arguments)
+                self.assertEqual(arguments["client"].get_object.call_count, 1)
+
+    def test_reader_checks_evidence_contents_even_with_matching_hashes(self):
+        for name, field, value in (
+            ("audio_job.json", "bucket", "wrong-bucket"),
+            ("verified_script_acceptance.json", "script_sha256", "e" * 64),
+            ("job_result.json", "status", "failed"),
+            ("render/render_result.json", "completed_dialogue_lines", 1),
+        ):
+            with self.subTest(name=name):
+                arguments, objects = self.make_reader()
+                key = self.prefix + name
+                content = json.loads(objects[key])
+                content[field] = value
+                objects[key] = json.dumps(content).encode()
+                marker_key = self.prefix + "audio_success.json"
+                marker = json.loads(objects[marker_key])
+                for artifact in marker["artifacts"]:
+                    if artifact["key"] == key:
+                        artifact.update(
+                            bytes=len(objects[key]),
+                            sha256=hashlib.sha256(objects[key]).hexdigest(),
+                        )
+                objects[marker_key] = json.dumps(marker).encode()
+                with self.assertRaises(ValueError):
+                    read_audio_completion(**arguments)
 
 
 if __name__ == "__main__":
