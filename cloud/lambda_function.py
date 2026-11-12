@@ -13,6 +13,7 @@ def lambda_handler(event, context):
         "retrieve_audio_service_start",
         "check_audio_completion",
         "monitor_audio_completion",
+        "release_acknowledged_audio_worker",
     }:
         from cloud import audio_handoff_service
 

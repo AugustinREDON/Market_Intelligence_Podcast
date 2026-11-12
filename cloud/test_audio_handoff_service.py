@@ -327,6 +327,164 @@ class AudioHandoffServiceTests(unittest.TestCase):
         operation.assert_called_once_with(**arguments)
 
 
+    def make_acknowledged_release_request(self, state="stopped", with_stop=False):
+        request, objects, ssm = self.make_completion_request()
+        guest = json.loads(objects[
+            self.prefix + "audio_service_start_execution_claim.json"
+        ])
+        started = (
+            datetime.fromisoformat(guest["requested_at"])
+            - timedelta(minutes=1)
+        ).isoformat()
+        claim = {
+            "run_id": self.run_id,
+            "execution_arn": self.payload["execution_arn"],
+            "instance_id": service.audio.AUDIO_INSTANCE_ID,
+            "owner_token": self.payload["owner_token"],
+            "requested_at": started,
+            "automatic_retry_allowed": False,
+        }
+        objects[self.prefix + "audio_instance_start_claim.json"] = (
+            json.dumps(claim).encode()
+        )
+        objects[self.prefix + "audio_instance_start_receipt.json"] = (
+            json.dumps({
+                **claim,
+                "status": "audio_instance_start_acknowledged",
+                "start_claim_key": self.prefix + "audio_instance_start_claim.json",
+                "acknowledged_at": started,
+                "previous_state": "stopped",
+                "current_state": "pending",
+            }).encode()
+        )
+        ec2 = Mock()
+        instance = {
+            "InstanceId": service.audio.AUDIO_INSTANCE_ID,
+            "State": {"Name": "running"},
+        }
+        ec2.describe_instances.return_value = {
+            "Reservations": [{"Instances": [instance]}]
+        }
+        ec2.stop_instances.return_value = {
+            "StoppingInstances": [{
+                "InstanceId": service.audio.AUDIO_INSTANCE_ID,
+                "PreviousState": {"Name": "running"},
+                "CurrentState": {"Name": "stopping"},
+            }]
+        }
+        request["ec2_client"] = ec2
+        request["client"].delete_object.return_value = {
+            "ResponseMetadata": {"HTTPStatusCode": 204}
+        }
+        if with_stop:
+            service.audio.submit_audio_worker_stop(**request)
+        instance["State"]["Name"] = state
+        def read(**kwargs):
+            key = kwargs["Key"]
+            if key not in objects:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "NoSuchKey"},
+                        "ResponseMetadata": {"HTTPStatusCode": 404},
+                    },
+                    "GetObject",
+                )
+            return {
+                "ETag": request["lock_etag"],
+                "Body": io.BytesIO(objects[key]),
+            }
+
+        request["client"].get_object.side_effect = read
+        request["client"].reset_mock()
+        ec2.reset_mock()
+        return request, objects, ssm
+
+    def test_acknowledged_release_accepts_self_shutdown_or_confirmed_stop(self):
+        for with_stop in (False, True):
+            with self.subTest(with_stop=with_stop):
+                request, objects, ssm = self.make_acknowledged_release_request(
+                    with_stop=with_stop
+                )
+                result = service.release_acknowledged_audio_worker(**request)
+
+                self.assertEqual(result["status"], "audio_worker_released")
+                request["client"].delete_object.assert_called_once_with(
+                    Bucket=request["bucket"],
+                    Key=service.audio.WORKER_LOCK_KEY,
+                    IfMatch=request["lock_etag"],
+                )
+                request["client"].put_object.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
+                request["ec2_client"].start_instances.assert_not_called()
+                self.assertEqual(ssm.mock_calls, [])
+
+    def test_acknowledged_release_keeps_lock_until_stopped(self):
+        for state in ("running", "stopping"):
+            with self.subTest(state=state):
+                request, objects, ssm = self.make_acknowledged_release_request(
+                    state=state
+                )
+                result = service.release_acknowledged_audio_worker(**request)
+                self.assertEqual(result["status"], "audio_worker_not_stopped")
+                request["client"].delete_object.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
+
+    def test_acknowledged_release_blocks_missing_or_changed_request_evidence(self):
+        for scenario in (
+            "owner", "instance_receipt", "service_result",
+            "stop_receipt", "changed_stop",
+        ):
+            with self.subTest(scenario=scenario):
+                request, objects, ssm = self.make_acknowledged_release_request(
+                    with_stop=True
+                )
+                if scenario == "owner":
+                    request["owner_token"] = "wrong"
+                    expected_error = ValueError
+                elif scenario in {"instance_receipt", "service_result"}:
+                    name = (
+                        "audio_instance_start_receipt.json"
+                        if scenario == "instance_receipt"
+                        else "audio_service_start_result.json"
+                    )
+                    del objects[self.prefix + name]
+                    expected_error = ClientError
+                elif scenario == "stop_receipt":
+                    del objects[self.prefix + "audio_instance_stop_receipt.json"]
+                    expected_error = RuntimeError
+                else:
+                    key = self.prefix + "audio_instance_stop_receipt.json"
+                    receipt = json.loads(objects[key])
+                    receipt["current_state"] = "running"
+                    objects[key] = json.dumps(receipt).encode()
+                    expected_error = ValueError
+
+                with self.assertRaises(expected_error):
+                    service.release_acknowledged_audio_worker(**request)
+                request["client"].delete_object.assert_not_called()
+                self.assertEqual(request["ec2_client"].mock_calls, [])
+
+    def test_lambda_routes_acknowledged_release(self):
+        from cloud.lambda_function import lambda_handler
+
+        arguments = {
+            key: self.payload[key] for key in (
+                "run_id", "execution_arn", "owner_token", "lock_etag"
+            )
+        }
+        with patch.object(
+            service, "release_acknowledged_audio_worker",
+            return_value={"status": "audio_worker_released"},
+        ) as operation:
+            result = lambda_handler(
+                {"action": "release_acknowledged_audio_worker", **arguments},
+                None,
+            )
+
+        self.assertEqual(result["status"], "audio_worker_released")
+        operation.assert_called_once_with(**arguments)
+
+
     def test_completion_preserves_verified_success_without_ssm(self):
         request, objects, ssm = self.make_completion_request()
         completed = {

@@ -13,7 +13,7 @@ from cloud import audio_handoff as handoff
 from cloud import audio_service as audio
 from cloud.acceptance import json_sha256, load_accepted_script
 from cloud.storage import S3RunStorage
-from cloud.audio_completion import read_audio_completion
+from cloud.audio_completion import read_audio_completion, _optional_s3_json
 
 def _aws_client(name):
     return boto3.client(
@@ -805,3 +805,92 @@ def monitor_audio_completion(
         **result,
         "status": "audio_completion_waiting",
     }
+
+def release_acknowledged_audio_worker(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ec2_client=None,
+):
+    """Release after acknowledged startup and shutdown, regardless of audio outcome."""
+    storage, payload, _ = _context(
+        run_id, execution_arn, owner_token, lock_etag, bucket, client,
+        request_required=False,
+    )
+    instance_start = audio._load_audio_start_receipt(
+        storage, run_id, execution_arn, owner_token
+    )
+    service_start = _load_startup_acknowledgement(storage, payload)
+    if (
+        _timestamp(instance_start["acknowledged_at"])
+        > _timestamp(service_start["requested_at"])
+    ):
+        raise ValueError("Service startup predates the acknowledged EC2 start")
+
+    claim_name = "audio_instance_stop_claim.json"
+    receipt_name = "audio_instance_stop_receipt.json"
+    claim = _optional_s3_json(
+        storage.client, storage.bucket, S3RunStorage._key(run_id, claim_name)
+    )
+    receipt = _optional_s3_json(
+        storage.client, storage.bucket, S3RunStorage._key(run_id, receipt_name)
+    )
+
+    # No external stop request is needed when the worker shut itself down.
+    # A partial request record remains uncertain and blocks automatic release.
+    if (claim is None) != (receipt is None):
+        raise RuntimeError("External stop outcome unresolved; retain ownership")
+
+    if claim is not None:
+        expected_claim = {
+            "run_id": run_id,
+            "execution_arn": execution_arn,
+            "instance_id": audio.AUDIO_INSTANCE_ID,
+            "generation_requested": False,
+            "owner_token": owner_token,
+            "lock_etag": lock_etag,
+            "startup_receipt_sha256": json_sha256(instance_start),
+            "requested_at": claim.get("requested_at"),
+            "automatic_retry_allowed": False,
+        }
+        if (
+            claim != expected_claim
+            or claim.get("generation_requested") is not False
+            or claim.get("automatic_retry_allowed") is not False
+        ):
+            raise ValueError("Stop claim does not match current ownership")
+
+        expected_receipt = {
+            **claim,
+            "status": "audio_instance_stop_acknowledged",
+            "stop_claim_key": S3RunStorage._key(run_id, claim_name),
+            "acknowledged_at": receipt.get("acknowledged_at"),
+            "previous_state": receipt.get("previous_state"),
+            "current_state": receipt.get("current_state"),
+        }
+        if (
+            receipt != expected_receipt
+            or receipt.get("generation_requested") is not False
+            or receipt.get("automatic_retry_allowed") is not False
+            or receipt.get("previous_state")
+            not in {"running", "stopping", "stopped"}
+            or receipt.get("current_state") not in {"stopping", "stopped"}
+        ):
+            raise ValueError("Stop receipt does not match its claim")
+
+        requested = _timestamp(claim["requested_at"])
+        acknowledged = _timestamp(receipt["acknowledged_at"])
+        if not (
+            _timestamp(service_start["requested_at"])
+            <= requested <= acknowledged <= datetime.now(timezone.utc)
+        ):
+            raise ValueError("Stop timing does not match acknowledged startup")
+
+    ec2_client = ec2_client if ec2_client is not None else _aws_client("ec2")
+    return audio.release_audio_worker(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=storage.bucket,
+        client=storage.client,
+        ec2_client=ec2_client,
+    )
