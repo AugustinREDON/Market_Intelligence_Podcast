@@ -8,13 +8,15 @@ import importlib.metadata
 import io
 import json
 import os
-from pathlib import Path
 import pwd
 import re
 import shlex
 import shutil
 import sys
 import tempfile
+import subprocess
+from pathlib import Path
+from datetime import datetime, timezone
 from uuid import UUID
 from zipfile import ZipFile
 
@@ -243,6 +245,90 @@ def handoff_job(payload, *, client, safeguard_source):
         "generation_requested": False,
     }
 
+def start_audio_service(payload, *, client, safeguard_source):
+    """Verify the installed job and request service startup once."""
+    validate_handoff(payload)
+    require(
+        BOOT_PATH.read_text().strip() == payload["boot_id"],
+        "Worker boot changed before service startup",
+    )
+    lock_path = WORK_ROOT / "audio_worker.lock"
+    require(
+        lock_path.is_file() and not lock_path.is_symlink(),
+        "Existing worker lock file is missing or linked",
+    )
+
+    with lock_path.open("r+") as worker_lock:
+        fcntl.flock(worker_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        versions = verify_installed_worker()
+        verify_owner(client, payload)
+        job = load_verified_job(client, payload)
+
+        from cloud.acceptance import json_sha256
+
+        target = APP_DIR / "audio_job.json"
+        require(
+            target.is_file() and not target.is_symlink(),
+            "Installed job is missing or linked",
+        )
+        local_job = json.loads(target.read_text(encoding="utf-8"))
+        require(
+            local_job == job
+            and json_sha256(local_job) == payload["job_sha256"],
+            "Installed job does not match the verified handoff",
+        )
+        probe = check_safeguards(safeguard_source, payload["handoff_token"])
+        require(
+            probe.get("status") == "audio_safeguards_verified"
+            and probe.get("probe_token") == payload["handoff_token"]
+            and probe.get("boot_id") == payload["boot_id"]
+            and probe.get("generation_requested") is False,
+            "Fresh service startup safeguards did not match",
+        )
+        verify_owner(client, payload)
+
+        claim_key = (
+            f'runs/{payload["run_id"]}/'
+            "audio_service_start_execution_claim.json"
+        )
+        claim = {
+            **payload,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "automatic_retry_allowed": False,
+            "generation_requested": True,
+        }
+        client.put_object(
+            Bucket=payload["bucket"],
+            Key=claim_key,
+            Body=json.dumps(
+                claim, sort_keys=True, allow_nan=False
+            ).encode("utf-8"),
+            ContentType="application/json",
+            IfNoneMatch="*",
+        )
+
+    # The audio worker acquires this same lock itself.
+    # Release it before asking systemd to launch the worker.
+    subprocess.run(
+        ["/usr/bin/systemctl", "start", "mip-audio-job.service"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return {
+        **payload,
+        "status": "audio_service_start_acknowledged",
+        "startup_claim_key": claim_key,
+        "bundle_sha256": BUNDLE_SHA256,
+        "installed_versions": versions,
+        "generation_requested": True,
+    }
+
+
+def build_audio_service_start_command(payload):
+    return build_audio_handoff_command(payload) + " start"
+
 
 def build_audio_handoff_command(payload):
     from cloud.audio_service import AUDIO_SAFEGUARD_PROBE
@@ -278,7 +364,13 @@ if __name__ == "__main__":
             read_timeout=30,
         ),
     )
-    result = handoff_job(
+    operation = sys.argv[2] if len(sys.argv) == 3 else "handoff"
+    require(
+        len(sys.argv) in {2, 3} and operation in {"handoff", "start"},
+        "Unexpected audio command operation",
+    )
+    action = handoff_job if operation == "handoff" else start_audio_service
+    result = action(
         payload,
         client=client,
         safeguard_source=globals()["HANDOFF_SAFEGUARD_SOURCE"],

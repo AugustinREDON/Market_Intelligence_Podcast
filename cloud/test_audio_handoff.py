@@ -111,6 +111,89 @@ class AudioHandoffTests(unittest.TestCase):
             self.payload, client=self.client, safeguard_source="offline"
         )
 
+    def test_service_start_claim_precedes_launch_and_lock_is_released(self):
+        self.target.write_text(json.dumps(self.job))
+
+        def launch(*args, **kwargs):
+            self.client.put_object.assert_called_once()
+            saved = self.client.put_object.call_args.kwargs
+            self.assertEqual(saved["IfNoneMatch"], "*")
+            claim = json.loads(saved["Body"])
+            self.assertIs(claim["automatic_retry_allowed"], False)
+            self.assertIs(claim["generation_requested"], True)
+
+            with (handoff.WORK_ROOT / "audio_worker.lock").open("r+") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        with patch.object(
+            handoff.subprocess, "run", side_effect=launch
+        ) as start:
+            result = handoff.start_audio_service(
+                self.payload, client=self.client, safeguard_source="offline"
+            )
+
+        start.assert_called_once_with(
+            ["/usr/bin/systemctl", "start", "mip-audio-job.service"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            result["status"], "audio_service_start_acknowledged"
+        )
+        self.assertIs(result["generation_requested"], True)
+
+    def test_service_start_rejects_changed_job_or_safeguards(self):
+        for scenario in ("job", "safeguards"):
+            with self.subTest(scenario=scenario):
+                self.client.reset_mock()
+                self.target.write_text(json.dumps(
+                    {} if scenario == "job" else self.job
+                ))
+                with (
+                    patch.dict(self.probe.return_value),
+                    patch.object(handoff.subprocess, "run") as start,
+                ):
+                    if scenario == "safeguards":
+                        self.probe.return_value["status"] = "failed"
+                    with self.assertRaises(ValueError):
+                        handoff.start_audio_service(
+                            self.payload,
+                            client=self.client,
+                            safeguard_source="offline",
+                        )
+                self.client.put_object.assert_not_called()
+                start.assert_not_called()
+
+    def test_service_start_claim_or_launch_errors_never_retry(self):
+        self.target.write_text(json.dumps(self.job))
+
+        for scenario in ("claim", "launch"):
+            with self.subTest(scenario=scenario):
+                self.client.reset_mock()
+                self.client.put_object.side_effect = (
+                    TimeoutError("uncertain claim")
+                    if scenario == "claim" else None
+                )
+                with patch.object(
+                    handoff.subprocess,
+                    "run",
+                    side_effect=TimeoutError("uncertain launch"),
+                ) as start:
+                    with self.assertRaises(TimeoutError):
+                        handoff.start_audio_service(
+                            self.payload,
+                            client=self.client,
+                            safeguard_source="offline",
+                        )
+                self.client.put_object.assert_called_once()
+                if scenario == "claim":
+                    start.assert_not_called()
+                else:
+                    start.assert_called_once()
+
+
     def test_handoff_replaces_only_job_after_verification(self):
         before = {
             name: (handoff.APP_DIR / name).read_bytes()
