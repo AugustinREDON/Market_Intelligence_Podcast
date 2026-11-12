@@ -405,6 +405,192 @@ def _verify_worker_lock(
     if ownership != expected or response.get("ETag") != lock_etag:
         raise ValueError("Worker ownership does not match this execution")
 
+def _load_audio_start_receipt(storage, run_id, execution_arn, owner_token):
+    """Require matching saved evidence of an acknowledged EC2 start."""
+    claim_name = "audio_instance_start_claim.json"
+    claim = storage.read_json(run_id, claim_name)
+    receipt = storage.read_json(run_id, "audio_instance_start_receipt.json")
+    if not isinstance(claim, dict) or not isinstance(receipt, dict):
+        raise ValueError("Expected saved EC2 startup claim and receipt")
+
+    expected_claim = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "owner_token": owner_token,
+        "requested_at": claim.get("requested_at"),
+        "automatic_retry_allowed": False,
+    }
+    if (
+        claim != expected_claim
+        or claim.get("automatic_retry_allowed") is not False
+    ):
+        raise ValueError("EC2 startup claim does not match current ownership")
+
+    if not all(
+        isinstance(value, str)
+        for value in (
+            claim.get("requested_at"),
+            receipt.get("acknowledged_at"),
+        )
+    ):
+        raise ValueError("Expected EC2 startup timestamps")
+
+    requested = datetime.fromisoformat(claim["requested_at"])
+    acknowledged = datetime.fromisoformat(receipt["acknowledged_at"])
+    if (
+        requested.utcoffset() is None
+        or acknowledged.utcoffset() is None
+        or not requested <= acknowledged <= datetime.now(timezone.utc)
+    ):
+        raise ValueError("Invalid EC2 startup receipt timing")
+
+    expected_receipt = {
+        **claim,
+        "status": "audio_instance_start_acknowledged",
+        "start_claim_key": S3RunStorage._key(run_id, claim_name),
+        "acknowledged_at": receipt["acknowledged_at"],
+        "previous_state": "stopped",
+        "current_state": receipt.get("current_state"),
+    }
+    if (
+        receipt != expected_receipt
+        or receipt.get("automatic_retry_allowed") is not False
+        or receipt.get("current_state") not in {"pending", "running"}
+    ):
+        raise ValueError("EC2 startup receipt does not match its claim")
+
+    return receipt
+
+
+def submit_audio_worker_stop(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ec2_client=None,
+):
+    """Request one normal EC2 stop; never release ownership or retry."""
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client(
+            "s3", region_name=AUDIO_REGION, config=config,
+        )
+    _verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+    storage = S3RunStorage(bucket=bucket, client=client)
+    startup = _load_audio_start_receipt(
+        storage, run_id, execution_arn, owner_token
+    )
+    if ec2_client is None:
+        ec2_client = boto3.client(
+            "ec2", region_name=AUDIO_REGION, config=config,
+        )
+
+    state = _read_audio_worker_state(ec2_client)
+    base = {
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "generation_requested": False,
+    }
+    if state != "running":
+        return {
+            **base,
+            "status": (
+                "audio_worker_shutdown_confirmed"
+                if state == "stopped"
+                else "audio_worker_shutdown_pending"
+            ),
+            "instance_state": state,
+            "stop_requested": False,
+        }
+
+    claim_name = "audio_instance_stop_claim.json"
+    claim_key = S3RunStorage._key(run_id, claim_name)
+    claim = {
+        **base,
+        "owner_token": owner_token,
+        "lock_etag": lock_etag,
+        "startup_receipt_sha256": json_sha256(startup),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "automatic_retry_allowed": False,
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=claim_key,
+        Body=json.dumps(
+            claim, sort_keys=True, allow_nan=False
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
+
+    response = ec2_client.stop_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    transitions = (
+        response.get("StoppingInstances")
+        if isinstance(response, dict)
+        else None
+    )
+    if (
+        not isinstance(transitions, list)
+        or len(transitions) != 1
+        or not isinstance(transitions[0], dict)
+    ):
+        raise RuntimeError("EC2 stop outcome uncertain; reconcile before recovery")
+
+    transition = transitions[0]
+    previous = transition.get("PreviousState")
+    current = transition.get("CurrentState")
+    if (
+        transition.get("InstanceId") != AUDIO_INSTANCE_ID
+        or not isinstance(previous, dict)
+        or previous.get("Name") not in {"running", "stopping", "stopped"}
+        or not isinstance(current, dict)
+        or current.get("Name") not in {"stopping", "stopped"}
+    ):
+        raise RuntimeError("EC2 stop outcome uncertain; reconcile before recovery")
+
+    receipt_name = "audio_instance_stop_receipt.json"
+    receipt_key = S3RunStorage._key(run_id, receipt_name)
+    receipt = {
+        **claim,
+        "status": "audio_instance_stop_acknowledged",
+        "stop_claim_key": claim_key,
+        "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+        "previous_state": previous["Name"],
+        "current_state": current["Name"],
+    }
+    client.put_object(
+        Bucket=bucket,
+        Key=receipt_key,
+        Body=json.dumps(
+            receipt, sort_keys=True, allow_nan=False
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
+    return {
+        **base,
+        "status": "audio_worker_stop_requested",
+        "stop_claim_key": claim_key,
+        "stop_receipt_key": receipt_key,
+        "stop_requested": True,
+    }
+
 
 def start_audio_worker(
     *,

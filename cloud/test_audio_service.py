@@ -176,6 +176,192 @@ class AudioServiceTests(unittest.TestCase):
             "ec2_client": ec2_client,
         }
 
+    def make_stop_request(self, state="running"):
+        request = self.make_release_request(state)
+        client = request["client"]
+        owner = json.loads(client.get_object.return_value["Body"].getvalue())
+        now = datetime.now(timezone.utc).isoformat()
+        claim = {
+            "run_id": self.run_id,
+            "execution_arn": request["execution_arn"],
+            "instance_id": AUDIO_INSTANCE_ID,
+            "owner_token": request["owner_token"],
+            "requested_at": now,
+            "automatic_retry_allowed": False,
+        }
+        prefix = f"runs/{self.run_id}/"
+        objects = {
+            WORKER_LOCK_KEY: json.dumps(owner).encode(),
+            prefix + "audio_instance_start_claim.json": json.dumps(claim).encode(),
+            prefix + "audio_instance_start_receipt.json": json.dumps({
+                **claim,
+                "status": "audio_instance_start_acknowledged",
+                "start_claim_key": prefix + "audio_instance_start_claim.json",
+                "acknowledged_at": now,
+                "previous_state": "stopped",
+                "current_state": "pending",
+            }).encode(),
+        }
+
+        def read(**kwargs):
+            key = kwargs["Key"]
+            if key not in objects:
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey"},
+                     "ResponseMetadata": {"HTTPStatusCode": 404}},
+                    "GetObject",
+                )
+            return {
+                "ETag": request["lock_etag"],
+                "Body": io.BytesIO(objects[key]),
+            }
+
+        def put(**kwargs):
+            self.assertEqual(kwargs["IfNoneMatch"], "*")
+            if kwargs["Key"] in objects:
+                raise ClientError(
+                    {"Error": {"Code": "PreconditionFailed"},
+                     "ResponseMetadata": {"HTTPStatusCode": 412}},
+                    "PutObject",
+                )
+            objects[kwargs["Key"]] = kwargs["Body"]
+            return {}
+
+        client.get_object.side_effect = read
+        client.put_object.side_effect = put
+        request["ec2_client"].stop_instances.return_value = {
+            "StoppingInstances": [{
+                "InstanceId": AUDIO_INSTANCE_ID,
+                "PreviousState": {"Name": "running"},
+                "CurrentState": {"Name": "stopping"},
+            }]
+        }
+        return request, objects
+
+    def test_stop_claim_precedes_one_request_and_receipt_is_saved(self):
+        request, objects = self.make_stop_request()
+        ec2 = request["ec2_client"]
+        response = ec2.stop_instances.return_value
+
+        def stop(**kwargs):
+            key = f"runs/{self.run_id}/audio_instance_stop_claim.json"
+            self.assertIn(key, objects)
+            self.assertIs(
+                json.loads(objects[key])["automatic_retry_allowed"], False
+            )
+            return response
+
+        ec2.stop_instances.side_effect = stop
+        result = service.submit_audio_worker_stop(**request)
+        self.assertEqual(result["status"], "audio_worker_stop_requested")
+        self.assertIn(result["stop_receipt_key"], objects)
+        ec2.stop_instances.assert_called_once_with(
+            InstanceIds=[AUDIO_INSTANCE_ID]
+        )
+        request["client"].delete_object.assert_not_called()
+        ec2.start_instances.assert_not_called()
+
+    def test_stop_does_not_submit_for_nonrunning_states(self):
+        for state in ("pending", "stopping", "stopped"):
+            with self.subTest(state=state):
+                request, objects = self.make_stop_request(state)
+                result = service.submit_audio_worker_stop(**request)
+                self.assertEqual(
+                    result["status"],
+                    "audio_worker_shutdown_confirmed"
+                    if state == "stopped"
+                    else "audio_worker_shutdown_pending",
+                )
+                self.assertIs(result["stop_requested"], False)
+                request["ec2_client"].stop_instances.assert_not_called()
+                request["client"].put_object.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_stop_requires_owned_matching_startup_evidence(self):
+        for scenario in ("owner", "missing", "changed", "timing"):
+            with self.subTest(scenario=scenario):
+                request, objects = self.make_stop_request()
+                key = f"runs/{self.run_id}/audio_instance_start_receipt.json"
+                if scenario == "owner":
+                    request["owner_token"] = "wrong"
+                elif scenario == "missing":
+                    del objects[key]
+                else:
+                    receipt = json.loads(objects[key])
+                    if scenario == "changed":
+                        receipt["owner_token"] = "wrong"
+                    else:
+                        receipt["acknowledged_at"] = "2020-01-01T00:00:00+00:00"
+                    objects[key] = json.dumps(receipt).encode()
+
+                error_type = ClientError if scenario == "missing" else ValueError
+                with self.assertRaises(error_type):
+                    service.submit_audio_worker_stop(**request)
+                self.assertEqual(request["ec2_client"].mock_calls, [])
+                request["client"].put_object.assert_not_called()
+
+    def test_uncertain_stop_never_authorizes_resubmission(self):
+        for scenario in ("claim", "send", "response", "receipt"):
+            with self.subTest(scenario=scenario):
+                request, objects = self.make_stop_request()
+                prefix = f"runs/{self.run_id}/"
+                claim_key = prefix + "audio_instance_stop_claim.json"
+                receipt_key = prefix + "audio_instance_stop_receipt.json"
+                original_put = request["client"].put_object.side_effect
+
+                def put(**kwargs):
+                    original_put(**kwargs)
+                    fail_key = claim_key if scenario == "claim" else receipt_key
+                    if (
+                        scenario in {"claim", "receipt"}
+                        and kwargs["Key"] == fail_key
+                    ):
+                        raise TimeoutError("Uncertain stop evidence write")
+                    return {}
+
+                request["client"].put_object.side_effect = put
+                ec2 = request["ec2_client"]
+                if scenario == "send":
+                    ec2.stop_instances.side_effect = TimeoutError("Uncertain stop")
+                elif scenario == "response":
+                    ec2.stop_instances.return_value = {}
+
+                expected_error = RuntimeError if scenario == "response" else TimeoutError
+                with self.assertRaises(expected_error):
+                    service.submit_audio_worker_stop(**request)
+
+                self.assertIn(claim_key, objects)
+                self.assertEqual(
+                    ec2.stop_instances.call_count,
+                    0 if scenario == "claim" else 1,
+                )
+                ec2.stop_instances.reset_mock()
+                with self.assertRaises(ClientError):
+                    service.submit_audio_worker_stop(**request)
+                ec2.stop_instances.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_lambda_routes_worker_stop(self):
+        from cloud.lambda_function import lambda_handler
+
+        request, objects = self.make_stop_request()
+        arguments = {
+            key: request[key] for key in (
+                "run_id", "execution_arn", "owner_token", "lock_etag"
+            )
+        }
+        with patch.object(
+            service, "submit_audio_worker_stop",
+            return_value={"status": "audio_worker_stop_requested"},
+        ) as operation:
+            result = lambda_handler(
+                {"action": "submit_audio_worker_stop", **arguments}, None
+            )
+
+        self.assertEqual(result["status"], "audio_worker_stop_requested")
+        operation.assert_called_once_with(**arguments)
+
+
     def test_shutdown_check_only_confirms_stopped_and_never_mutates(self):
         for state in ("pending", "running", "stopping", "stopped"):
             with self.subTest(state=state):
