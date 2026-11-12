@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone, timedelta
 from cloud.acceptance import json_sha256
+from cloud import audio_service as service
 from cloud.audio_service import (
     AUDIO_INSTANCE_ID,
     EXECUTION_ARN_PREFIX,
@@ -174,6 +175,92 @@ class AudioServiceTests(unittest.TestCase):
             "client": client,
             "ec2_client": ec2_client,
         }
+
+    def test_shutdown_check_only_confirms_stopped_and_never_mutates(self):
+        for state in ("pending", "running", "stopping", "stopped"):
+            with self.subTest(state=state):
+                request = self.make_release_request(state)
+                result = service.check_audio_worker_shutdown(**request)
+
+                self.assertEqual(
+                    result["status"],
+                    "audio_worker_shutdown_confirmed"
+                    if state == "stopped"
+                    else "audio_worker_shutdown_pending",
+                )
+                self.assertEqual(result["instance_state"], state)
+                self.assertIs(result["generation_requested"], False)
+                request["ec2_client"].describe_instances.assert_called_once_with(
+                    InstanceIds=[AUDIO_INSTANCE_ID],
+                )
+                self.assertEqual(
+                    len(request["ec2_client"].mock_calls), 1
+                )
+                request["client"].put_object.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_shutdown_check_rejects_wrong_owner_before_ec2(self):
+        request = self.make_release_request()
+        request["owner_token"] = "wrong"
+        with self.assertRaises(ValueError):
+            service.check_audio_worker_shutdown(**request)
+
+        self.assertEqual(request["ec2_client"].mock_calls, [])
+        request["client"].delete_object.assert_not_called()
+
+    def test_shutdown_check_rejects_bad_instance_and_propagates_read_errors(self):
+        for scenario in ("missing", "wrong", "terminated", "access"):
+            with self.subTest(scenario=scenario):
+                request = self.make_release_request()
+                ec2 = request["ec2_client"]
+                instance = ec2.describe_instances.return_value[
+                    "Reservations"
+                ][0]["Instances"][0]
+
+                if scenario == "missing":
+                    ec2.describe_instances.return_value = {
+                        "Reservations": []
+                    }
+                elif scenario == "wrong":
+                    instance["InstanceId"] = "i-wrong"
+                elif scenario == "terminated":
+                    instance["State"]["Name"] = "terminated"
+                else:
+                    ec2.describe_instances.side_effect = ClientError(
+                        {"Error": {"Code": "UnauthorizedOperation"}},
+                        "DescribeInstances",
+                    )
+
+                error_type = ClientError if scenario == "access" else ValueError
+                with self.assertRaises(error_type):
+                    service.check_audio_worker_shutdown(**request)
+
+                ec2.describe_instances.assert_called_once()
+                ec2.stop_instances.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+
+    def test_lambda_routes_shutdown_check(self):
+        from cloud.lambda_function import lambda_handler
+
+        request = self.make_release_request()
+        arguments = {
+            key: request[key] for key in (
+                "run_id", "execution_arn", "owner_token", "lock_etag"
+            )
+        }
+        with patch.object(
+            service,
+            "check_audio_worker_shutdown",
+            return_value={"status": "audio_worker_shutdown_confirmed"},
+        ) as operation:
+            result = lambda_handler(
+                {"action": "check_audio_worker_shutdown", **arguments},
+                None,
+            )
+
+        self.assertEqual(result["status"], "audio_worker_shutdown_confirmed")
+        operation.assert_called_once_with(**arguments)
+
 
     def test_release_requires_stopped_instance_and_conditional_delete(self):
         request = self.make_release_request()

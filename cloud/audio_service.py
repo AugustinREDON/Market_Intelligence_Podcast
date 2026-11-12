@@ -164,6 +164,75 @@ def acquire_audio_worker(
         "lock_etag": response["ETag"],
     }
 
+def _read_audio_worker_state(ec2_client):
+    """Read the fixed worker instance and reject unexpected identities/states."""
+    description = ec2_client.describe_instances(
+        InstanceIds=[AUDIO_INSTANCE_ID],
+    )
+    instances = [
+        instance
+        for reservation in description.get("Reservations", [])
+        for instance in reservation.get("Instances", [])
+    ]
+    if (
+        len(instances) != 1
+        or instances[0].get("InstanceId") != AUDIO_INSTANCE_ID
+    ):
+        raise ValueError("Could not verify the expected audio instance")
+
+    state = instances[0].get("State", {}).get("Name")
+    if state not in {"pending", "running", "stopping", "stopped"}:
+        raise ValueError(f"Unexpected audio instance state: {state}")
+    return state
+
+
+def check_audio_worker_shutdown(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    bucket=None, client=None, ec2_client=None,
+):
+    """Observe shutdown under ownership; do not stop EC2 or release the lock."""
+    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise ValueError("MIP_S3_BUCKET must be configured")
+
+    config = Config(
+        retries={"total_max_attempts": 1},
+        connect_timeout=10,
+        read_timeout=30,
+    )
+    if client is None:
+        client = boto3.client(
+            "s3", region_name=AUDIO_REGION, config=config,
+        )
+
+    _verify_worker_lock(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+    )
+    if ec2_client is None:
+        ec2_client = boto3.client(
+            "ec2", region_name=AUDIO_REGION, config=config,
+        )
+
+    state = _read_audio_worker_state(ec2_client)
+    return {
+        "status": (
+            "audio_worker_shutdown_confirmed"
+            if state == "stopped"
+            else "audio_worker_shutdown_pending"
+        ),
+        "run_id": run_id,
+        "execution_arn": execution_arn,
+        "instance_id": AUDIO_INSTANCE_ID,
+        "instance_state": state,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "generation_requested": False,
+    }
+
 def release_audio_worker(
     *,
     run_id,
