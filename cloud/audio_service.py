@@ -504,17 +504,60 @@ def start_audio_worker(
     response = ec2_client.start_instances(
         InstanceIds=[AUDIO_INSTANCE_ID],
     )
-    started = response.get("StartingInstances", [])
+    started = (
+        response.get("StartingInstances")
+        if isinstance(response, dict)
+        else None
+    )
     if (
-        len(started) != 1
-        or started[0].get("InstanceId") != AUDIO_INSTANCE_ID
-        or started[0].get("PreviousState", {}).get("Name") != "stopped"
-        or started[0].get("CurrentState", {}).get("Name")
-        not in {"pending", "running"}
+        not isinstance(started, list)
+        or len(started) != 1
+        or not isinstance(started[0], dict)
     ):
         raise RuntimeError(
             "EC2 start outcome uncertain; inspect before recovery"
         )
+
+    transition = started[0]
+    previous = transition.get("PreviousState")
+    current = transition.get("CurrentState")
+    if (
+        transition.get("InstanceId") != AUDIO_INSTANCE_ID
+        or not isinstance(previous, dict)
+        or previous.get("Name") != "stopped"
+        or not isinstance(current, dict)
+        or current.get("Name") not in {"pending", "running"}
+    ):
+        raise RuntimeError(
+            "EC2 start outcome uncertain; inspect before recovery"
+        )
+
+    receipt_key = S3RunStorage._key(
+        run_id,
+        "audio_instance_start_receipt.json",
+    )
+    receipt = {
+        **claim,
+        "status": "audio_instance_start_acknowledged",
+        "start_claim_key": claim_key,
+        "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+        "previous_state": previous["Name"],
+        "current_state": current["Name"],
+    }
+
+    # A failed or uncertain receipt write must propagate.
+    # The original claim remains and prevents another startup attempt.
+    client.put_object(
+        Bucket=bucket,
+        Key=receipt_key,
+        Body=json.dumps(
+            receipt,
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8"),
+        ContentType="application/json",
+        IfNoneMatch="*",
+    )
 
     return {
         "status": "audio_instance_start_requested",
@@ -523,8 +566,10 @@ def start_audio_worker(
         "instance_id": AUDIO_INSTANCE_ID,
         "requested_at": requested_at,
         "start_claim_key": claim_key,
+        "start_receipt_key": receipt_key,
         "generation_requested": False,
     }
+
 
 def check_audio_worker_connection(
     *,

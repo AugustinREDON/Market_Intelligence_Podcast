@@ -473,6 +473,113 @@ class AudioServiceTests(unittest.TestCase):
         self.assertFalse(result["generation_requested"])
         request["ec2_client"].start_instances.assert_called_once()
 
+        writes = request["client"].put_object.call_args_list
+        self.assertEqual(len(writes), 2)
+        claim = json.loads(writes[0].kwargs["Body"])
+        saved = writes[1].kwargs
+        receipt = json.loads(saved["Body"])
+
+        self.assertEqual(saved["IfNoneMatch"], "*")
+        self.assertEqual(saved["Bucket"], request["bucket"])
+        self.assertEqual(
+            saved["Key"],
+            f"runs/{self.run_id}/audio_instance_start_receipt.json",
+        )
+        self.assertEqual(result["start_receipt_key"], saved["Key"])
+        self.assertEqual(
+            receipt,
+            {
+                **claim,
+                "status": "audio_instance_start_acknowledged",
+                "start_claim_key": result["start_claim_key"],
+                "acknowledged_at": receipt["acknowledged_at"],
+                "previous_state": "stopped",
+                "current_state": "pending",
+            },
+        )
+        self.assertIs(receipt["automatic_retry_allowed"], False)
+        self.assertLessEqual(
+            datetime.fromisoformat(claim["requested_at"]),
+            datetime.fromisoformat(receipt["acknowledged_at"]),
+        )
+
+    def test_start_receipt_failure_preserves_claim_without_retrying(self):
+        for receipt_saved in (False, True):
+            with self.subTest(receipt_saved=receipt_saved):
+                request = self.make_release_request()
+                objects = {}
+                claim_key = (
+                    f"runs/{self.run_id}/audio_instance_start_claim.json"
+                )
+                receipt_key = (
+                    f"runs/{self.run_id}/audio_instance_start_receipt.json"
+                )
+
+                def put(**kwargs):
+                    self.assertEqual(kwargs["IfNoneMatch"], "*")
+                    key = kwargs["Key"]
+                    if key == receipt_key:
+                        if receipt_saved:
+                            objects[key] = kwargs["Body"]
+                        raise TimeoutError("Uncertain startup receipt write")
+                    objects[key] = kwargs["Body"]
+                    return {}
+
+                request["client"].put_object.side_effect = put
+                request["ec2_client"].start_instances.return_value = {
+                    "StartingInstances": [{
+                        "InstanceId": AUDIO_INSTANCE_ID,
+                        "PreviousState": {"Name": "stopped"},
+                        "CurrentState": {"Name": "pending"},
+                    }]
+                }
+
+                with self.assertRaises(TimeoutError):
+                    start_audio_worker(**request)
+
+                self.assertIn(claim_key, objects)
+                self.assertEqual(receipt_key in objects, receipt_saved)
+                request["ec2_client"].start_instances.assert_called_once_with(
+                    InstanceIds=[AUDIO_INSTANCE_ID],
+                )
+                self.assertEqual(request["client"].put_object.call_count, 2)
+                request["client"].delete_object.assert_not_called()
+                request["ec2_client"].stop_instances.assert_not_called()
+
+    def test_malformed_start_response_never_creates_receipt(self):
+        for response in (
+            None,
+            {},
+            {"StartingInstances": None},
+            {"StartingInstances": [None]},
+            {
+                "StartingInstances": [{
+                    "InstanceId": AUDIO_INSTANCE_ID,
+                    "PreviousState": None,
+                    "CurrentState": {"Name": "pending"},
+                }]
+            },
+            {
+                "StartingInstances": [{
+                    "InstanceId": "i-wrong",
+                    "PreviousState": {"Name": "stopped"},
+                    "CurrentState": {"Name": "pending"},
+                }]
+            },
+        ):
+            with self.subTest(response=response):
+                request = self.make_release_request()
+                request["ec2_client"].start_instances.return_value = response
+
+                with self.assertRaises(RuntimeError):
+                    start_audio_worker(**request)
+
+                # Only the pre-request claim was written.
+                request["client"].put_object.assert_called_once()
+                request["ec2_client"].start_instances.assert_called_once()
+                request["client"].delete_object.assert_not_called()
+
+
     def test_start_rejects_wrong_owner_before_ec2_check(self):
         request = self.make_release_request()
         request["owner_token"] = "another-owner"
