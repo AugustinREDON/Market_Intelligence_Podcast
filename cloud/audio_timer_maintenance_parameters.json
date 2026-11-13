@@ -1,0 +1,20 @@
+{
+  "executionTimeout": ["120"],
+  "workingDirectory": ["/etc/systemd/system"],
+  "commands": [
+    "set -eu",
+    "trap 'status=$?; trap - EXIT; if [ \"$status\" -ne 0 ]; then /usr/bin/systemctl --no-block poweroff || true; fi; exit \"$status\"' EXIT",
+    "test \"$(systemctl show mip-audio-job.service --property=UnitFileState --value)\" = static",
+    "test \"$(systemctl show mip-audio-job.service --property=ActiveState --value)\" = inactive",
+    "systemctl is-active --quiet mip-max-runtime.timer",
+    "grep -Fx 'OnBootSec=90min' /etc/systemd/system/mip-max-runtime.timer",
+    "sed -i 's/^OnBootSec=90min$/OnBootSec=60min/' /etc/systemd/system/mip-max-runtime.timer",
+    "systemctl daemon-reload",
+    "systemctl restart mip-max-runtime.timer",
+    "systemctl is-enabled mip-max-runtime.timer",
+    "systemctl is-active --quiet mip-max-runtime.timer",
+    "grep -Fx 'OnBootSec=60min' /etc/systemd/system/mip-max-runtime.timer",
+    "systemctl show mip-max-runtime.timer --property=ActiveState --property=SubState --property=NextElapseUSecMonotonic",
+    "systemctl list-timers mip-max-runtime.timer --no-pager"
+  ]
+}
