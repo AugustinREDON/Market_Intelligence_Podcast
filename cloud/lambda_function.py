@@ -68,6 +68,18 @@ def lambda_handler(event, context):
             lock_etag=event["lock_etag"],
         )
 
+    if event.get("action") == "monitor_audio_worker_shutdown":
+        from cloud.audio_service import monitor_audio_worker_shutdown
+
+        return monitor_audio_worker_shutdown(
+            run_id=event["run_id"],
+            execution_arn=event["execution_arn"],
+            owner_token=event["owner_token"],
+            lock_etag=event["lock_etag"],
+            shutdown_wait_started_at=event["shutdown_wait_started_at"],
+        )
+
+
     if event.get("action") == "check_audio_worker_shutdown":
         from cloud.audio_service import check_audio_worker_shutdown
 

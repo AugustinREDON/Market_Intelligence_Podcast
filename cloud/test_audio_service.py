@@ -361,6 +361,130 @@ class AudioServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "audio_worker_stop_requested")
         operation.assert_called_once_with(**arguments)
 
+    def test_shutdown_monitor_bounds_waiting_without_mutations(self):
+        now = datetime(2026, 11, 12, 4, 0, tzinfo=timezone.utc)
+        for state in ("pending", "running", "stopping", "stopped"):
+            for elapsed in (599, 600, 601):
+                with self.subTest(state=state, elapsed=elapsed):
+                    request = self.make_release_request(state)
+                    started = (
+                        now - timedelta(seconds=elapsed)
+                    ).isoformat()
+
+                    with patch.object(
+                        service, "datetime", wraps=datetime
+                    ) as clock:
+                        clock.now.return_value = now
+                        result = service.monitor_audio_worker_shutdown(
+                            **request,
+                            shutdown_wait_started_at=started,
+                        )
+
+                    expected = "audio_worker_shutdown_pending"
+                    if state == "stopped":
+                        expected = "audio_worker_shutdown_confirmed"
+                    elif elapsed >= 600:
+                        expected = "audio_worker_shutdown_deadline_exceeded"
+
+                    self.assertEqual(result["status"], expected)
+                    self.assertEqual(result["elapsed_seconds"], elapsed)
+                    self.assertEqual(
+                        result["shutdown_wait_started_at"], started
+                    )
+                    self.assertIs(result["generation_requested"], False)
+                    self.assertEqual(
+                        len(request["ec2_client"].mock_calls), 1
+                    )
+                    request["client"].put_object.assert_not_called()
+                    request["client"].delete_object.assert_not_called()
+
+    def test_shutdown_monitor_rejects_invalid_wait_before_aws(self):
+        now = datetime(2026, 11, 12, 4, 0, tzinfo=timezone.utc)
+        for timestamp in (
+            None,
+            "",
+            "invalid",
+            "2026-11-12T03:59:00",
+            (now + timedelta(seconds=1)).isoformat(),
+        ):
+            with self.subTest(timestamp=timestamp):
+                request = self.make_release_request()
+                with patch.object(
+                    service, "datetime", wraps=datetime
+                ) as clock:
+                    clock.now.return_value = now
+                    with self.assertRaises(ValueError):
+                        service.monitor_audio_worker_shutdown(
+                            **request,
+                            shutdown_wait_started_at=timestamp,
+                        )
+
+                self.assertEqual(request["client"].mock_calls, [])
+                self.assertEqual(request["ec2_client"].mock_calls, [])
+
+    def test_shutdown_monitor_checks_ownership_even_after_deadline(self):
+        request = self.make_release_request()
+        request["owner_token"] = "wrong"
+        started = (
+            datetime.now(timezone.utc) - timedelta(minutes=11)
+        ).isoformat()
+
+        with self.assertRaises(ValueError):
+            service.monitor_audio_worker_shutdown(
+                **request,
+                shutdown_wait_started_at=started,
+            )
+
+        self.assertEqual(request["ec2_client"].mock_calls, [])
+        request["client"].delete_object.assert_not_called()
+
+    def test_shutdown_monitor_propagates_ec2_error_without_retry(self):
+        request = self.make_release_request()
+        error = TimeoutError("Shutdown observation uncertain")
+        request["ec2_client"].describe_instances.side_effect = error
+
+        with self.assertRaises(TimeoutError) as caught:
+            service.monitor_audio_worker_shutdown(
+                **request,
+                shutdown_wait_started_at=(
+                    datetime.now(timezone.utc) - timedelta(seconds=1)
+                ).isoformat(),
+            )
+
+        self.assertIs(caught.exception, error)
+        request["ec2_client"].describe_instances.assert_called_once()
+        request["ec2_client"].stop_instances.assert_not_called()
+        request["client"].delete_object.assert_not_called()
+
+    def test_lambda_routes_shutdown_monitor(self):
+        from cloud.lambda_function import lambda_handler
+
+        request = self.make_release_request()
+        arguments = {
+            key: request[key] for key in (
+                "run_id", "execution_arn", "owner_token", "lock_etag"
+            )
+        }
+        arguments["shutdown_wait_started_at"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+        with patch.object(
+            service,
+            "monitor_audio_worker_shutdown",
+            return_value={
+                "status": "audio_worker_shutdown_deadline_exceeded"
+            },
+        ) as operation:
+            result = lambda_handler(
+                {"action": "monitor_audio_worker_shutdown", **arguments},
+                None,
+            )
+
+        self.assertEqual(
+            result["status"], "audio_worker_shutdown_deadline_exceeded"
+        )
+        operation.assert_called_once_with(**arguments)
+
 
     def test_shutdown_check_only_confirms_stopped_and_never_mutates(self):
         for state in ("pending", "running", "stopping", "stopped"):

@@ -233,6 +233,59 @@ def check_audio_worker_shutdown(
         "generation_requested": False,
     }
 
+AUDIO_SHUTDOWN_TIMEOUT_SECONDS = 10 * 60
+
+
+def monitor_audio_worker_shutdown(
+    *, run_id, execution_arn, owner_token, lock_etag,
+    shutdown_wait_started_at,
+    bucket=None, client=None, ec2_client=None,
+):
+    """Bound shutdown observation without stopping EC2 or releasing ownership."""
+    if not isinstance(shutdown_wait_started_at, str):
+        raise ValueError("Expected a shutdown wait timestamp")
+
+    started = datetime.fromisoformat(shutdown_wait_started_at)
+    if started.tzinfo is None or started.utcoffset() is None:
+        raise ValueError("Shutdown wait timestamp must include a timezone")
+
+    if started > datetime.now(timezone.utc):
+        raise ValueError("Shutdown wait timestamp is in the future")
+
+    observation = check_audio_worker_shutdown(
+        run_id=run_id,
+        execution_arn=execution_arn,
+        owner_token=owner_token,
+        lock_etag=lock_etag,
+        bucket=bucket,
+        client=client,
+        ec2_client=ec2_client,
+    )
+    observed = datetime.fromisoformat(observation["observed_at"])
+    elapsed = (observed - started).total_seconds()
+    if elapsed < 0:
+        raise ValueError("Shutdown observation predates the wait")
+
+    result = {
+        **observation,
+        "shutdown_wait_started_at": shutdown_wait_started_at,
+        "elapsed_seconds": elapsed,
+        "timeout_seconds": AUDIO_SHUTDOWN_TIMEOUT_SECONDS,
+    }
+    if observation["status"] == "audio_worker_shutdown_confirmed":
+        return result
+    if observation["status"] != "audio_worker_shutdown_pending":
+        raise ValueError("Unexpected shutdown observation status")
+
+    if elapsed >= AUDIO_SHUTDOWN_TIMEOUT_SECONDS:
+        return {
+            **result,
+            "status": "audio_worker_shutdown_deadline_exceeded",
+        }
+    return result
+
+
+
 def release_audio_worker(
     *,
     run_id,
