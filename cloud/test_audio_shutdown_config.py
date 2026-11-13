@@ -79,7 +79,7 @@ class AudioShutdownConfigTests(unittest.TestCase):
 
     def test_backup_shutdown_is_independent_of_python(self):
         timer = self.timer["Timer"]
-        self.assertEqual(timer["OnBootSec"], "90min")
+        self.assertEqual(timer["OnBootSec"], "60min")
         self.assertEqual(timer["Unit"], "mip-max-runtime.service")
         self.assertEqual(
             self.ceiling["Service"]["ExecStart"],

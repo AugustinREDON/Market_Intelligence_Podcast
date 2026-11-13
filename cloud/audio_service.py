@@ -7,7 +7,7 @@ import shlex
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from cloud.acceptance import json_sha256, load_accepted_script
 from cloud.storage import S3RunStorage
 
@@ -644,98 +644,6 @@ def submit_audio_worker_stop(
         "stop_requested": True,
     }
 
-def _build_audio_runtime_budget(
-    *, run_id, execution_arn, owner_token, lock_etag,
-    execution_started_at, now=None,
-):
-    """Derive fixed deadlines from the original workflow start."""
-    if not isinstance(execution_started_at, str):
-        raise ValueError("Expected the original workflow start timestamp")
-    started = datetime.fromisoformat(execution_started_at)
-    if started.utcoffset() is None:
-        raise ValueError("Workflow start timestamp must include a timezone")
-
-    started = started.astimezone(timezone.utc)
-    observed = now if now is not None else datetime.now(timezone.utc)
-    if observed.utcoffset() is None:
-        raise ValueError("Observation timestamp must include a timezone")
-    if started > observed:
-        raise ValueError("Workflow start timestamp is in the future")
-
-    work_deadline = started + timedelta(minutes=50)
-    if observed >= work_deadline:
-        raise TimeoutError("Shared work deadline reached; do not start EC2")
-
-    return {
-        "schema_version": 1,
-        "status": "audio_runtime_budget_preserved",
-        "run_id": run_id,
-        "execution_arn": execution_arn,
-        "instance_id": AUDIO_INSTANCE_ID,
-        "owner_token": owner_token,
-        "lock_etag": lock_etag,
-        "execution_started_at": started.isoformat(),
-        "work_deadline": work_deadline.isoformat(),
-        "shutdown_deadline": (started + timedelta(hours=1)).isoformat(),
-        "automatic_retry_allowed": False,
-        "generation_requested": False,
-    }
-
-
-def start_audio_worker_with_deadline(
-    *, run_id, execution_arn, owner_token, lock_etag,
-    execution_started_at,
-    bucket=None, client=None, ec2_client=None,
-):
-    """Preserve the owned absolute deadline before attempting EC2 startup."""
-    bucket = bucket or os.environ.get("MIP_S3_BUCKET")
-    if not isinstance(bucket, str) or not bucket.strip():
-        raise ValueError("MIP_S3_BUCKET must be configured")
-
-    if client is None:
-        client = boto3.client(
-            "s3", region_name=AUDIO_REGION,
-            config=Config(
-                retries={"total_max_attempts": 1},
-                connect_timeout=10, read_timeout=30,
-            ),
-        )
-
-    identity = {
-        "run_id": run_id,
-        "execution_arn": execution_arn,
-        "owner_token": owner_token,
-        "lock_etag": lock_etag,
-    }
-    _verify_worker_lock(**identity, bucket=bucket, client=client)
-    budget = _build_audio_runtime_budget(
-        **identity, execution_started_at=execution_started_at,
-    )
-    key = S3RunStorage._key(run_id, "audio_runtime_budget.json")
-    client.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps(
-            budget, sort_keys=True, allow_nan=False
-        ).encode("utf-8"),
-        ContentType="application/json",
-        IfNoneMatch="*",
-    )
-
-    # Recheck after storage latency before delegating startup.
-    _build_audio_runtime_budget(
-        **identity, execution_started_at=execution_started_at,
-    )
-    result = start_audio_worker(
-        **identity, bucket=bucket, client=client, ec2_client=ec2_client,
-    )
-    return {
-        **result,
-        "runtime_budget_key": key,
-        "shutdown_deadline": budget["shutdown_deadline"],
-    }
-
-
 
 def start_audio_worker(
     *,
@@ -1105,7 +1013,7 @@ ExecStart=/usr/bin/systemctl poweroff
 Description=MIP worker maximum runtime from each boot
 
 [Timer]
-OnBootSec=90min
+OnBootSec=60min
 AccuracySec=1s
 Unit=mip-max-runtime.service
 
@@ -1190,7 +1098,7 @@ uptime_seconds = float(
     Path("/proc/uptime").read_text().split()[0]
 )
 require(
-    uptime_seconds * 1_000_000 < deadline_us <= 5_401_000_000,
+    uptime_seconds * 1_000_000 < deadline_us <= 3_601_000_000,
     "Shutdown deadline is expired or exceeds the expected boot limit",
 )
 
@@ -1321,9 +1229,9 @@ def validate_audio_safeguard_output(*, output, probe_token):
     deadline = result["shutdown_deadline_monotonic_us"]
     if (
         type(uptime) not in (int, float)
-        or not 0 <= uptime < 5401
+        or not 0 <= uptime < 3601
         or type(deadline) is not int
-        or not uptime * 1_000_000 < deadline <= 5_401_000_000
+        or not uptime * 1_000_000 < deadline <= 3_601_000_000
     ):
         raise ValueError("Invalid safeguard uptime or shutdown deadline")
 

@@ -100,16 +100,6 @@ def lambda_handler(event, context):
             lock_etag=event["lock_etag"],
         )
 
-    if event.get("action") == "start_audio_worker_with_deadline":
-        from cloud.audio_service import start_audio_worker_with_deadline
-
-        return start_audio_worker_with_deadline(
-            run_id=event["run_id"],
-            execution_arn=event["execution_arn"],
-            owner_token=event["owner_token"],
-            lock_etag=event["lock_etag"],
-            execution_started_at=event["execution_started_at"],
-        )
 
 
     if event.get("action") == "start_audio_worker":

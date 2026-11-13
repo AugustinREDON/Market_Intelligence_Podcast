@@ -35,19 +35,10 @@ class AudioWorkflowTests(unittest.TestCase):
             "generation_requested": generation,
         }
 
-    def test_startup_uses_original_execution_time_and_budgeted_action(self):
+    def test_startup_uses_existing_guarded_action(self):
         parameters = self.states["StartAudioWorker"]["Parameters"]
-        self.assertEqual(
-            parameters["action"], "start_audio_worker_with_deadline"
-        )
-        self.assertEqual(
-            parameters["execution_started_at.$"], "$$.Execution.StartTime"
-        )
-        actions = {
-            state.get("Parameters", {}).get("action")
-            for state in self.states.values()
-        }
-        self.assertNotIn("start_audio_worker", actions)
+        self.assertEqual(parameters["action"], "start_audio_worker")
+        self.assertNotIn("execution_started_at.$", parameters)
 
 
     def test_startup_uncertainty_cannot_enter_generation_or_release(self):

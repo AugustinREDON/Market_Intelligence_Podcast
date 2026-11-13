@@ -79,7 +79,7 @@ def apply_shared_deadlines(states):
         if action in cleanup_actions:
             deadline = "cleanup_deadline"
             expired = "WorkflowCleanupDeadlineExceeded"
-        elif action in {"start_audio_worker", "start_audio_worker_with_deadline"}:
+        elif action == "start_audio_worker":
             expired = "WorkflowWorkDeadlineOwnershipRetained"
         elif action in before_acknowledgement:
             expired = "RecordWorkDeadlineBeforeAcknowledgement"

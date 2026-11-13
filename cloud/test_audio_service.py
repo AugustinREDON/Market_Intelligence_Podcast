@@ -734,174 +734,6 @@ class AudioServiceTests(unittest.TestCase):
                 service.assert_called_once_with(**arguments)
                 self.assertEqual(result, expected)
 
-    def test_runtime_budget_does_not_restart_the_clock(self):
-        started = datetime(2026, 11, 13, tzinfo=timezone.utc)
-        for minute in (0, 20, 49):
-            budget = service._build_audio_runtime_budget(
-                run_id=self.run_id,
-                execution_arn=EXECUTION_ARN_PREFIX + "offline-budget",
-                owner_token="owner",
-                lock_etag='"etag"',
-                execution_started_at=started.isoformat(),
-                now=started + timedelta(minutes=minute),
-            )
-            self.assertEqual(
-                budget["shutdown_deadline"],
-                (started + timedelta(hours=1)).isoformat(),
-            )
-            self.assertEqual(
-                budget["work_deadline"],
-                (started + timedelta(minutes=50)).isoformat(),
-            )
-
-    def test_runtime_budget_rejects_expired_or_invalid_start(self):
-        started = datetime(2026, 11, 13, tzinfo=timezone.utc)
-        identity = {
-            "run_id": self.run_id,
-            "execution_arn": EXECUTION_ARN_PREFIX + "offline-budget",
-            "owner_token": "owner",
-            "lock_etag": '"etag"',
-        }
-        for minute in (50, 60):
-            with self.assertRaises(TimeoutError):
-                service._build_audio_runtime_budget(
-                    **identity,
-                    execution_started_at=started.isoformat(),
-                    now=started + timedelta(minutes=minute),
-                )
-
-        for value in (
-            None,
-            "invalid",
-            "2026-11-13T00:00:00",
-            (started + timedelta(seconds=1)).isoformat(),
-        ):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                service._build_audio_runtime_budget(
-                    **identity, execution_started_at=value, now=started,
-                )
-
-    def test_budget_is_saved_before_delegating_ec2_start(self):
-        request = self.make_release_request()
-        started = datetime.now(timezone.utc) - timedelta(minutes=20)
-
-        def start_once(**kwargs):
-            request["client"].put_object.assert_called_once()
-            saved = request["client"].put_object.call_args.kwargs
-            self.assertEqual(saved["IfNoneMatch"], "*")
-            self.assertEqual(
-                saved["Key"],
-                f"runs/{self.run_id}/audio_runtime_budget.json",
-            )
-            budget = json.loads(saved["Body"])
-            self.assertEqual(budget["owner_token"], request["owner_token"])
-            self.assertEqual(budget["lock_etag"], request["lock_etag"])
-            self.assertEqual(
-                budget["shutdown_deadline"],
-                (started + timedelta(hours=1)).isoformat(),
-            )
-            return {"status": "audio_instance_start_requested"}
-
-        with patch.object(
-            service, "start_audio_worker", side_effect=start_once
-        ) as start:
-            result = service.start_audio_worker_with_deadline(
-                **request, execution_started_at=started.isoformat(),
-            )
-            start.assert_called_once_with(**request)
-
-        self.assertEqual(result["status"], "audio_instance_start_requested")
-        self.assertEqual(
-            result["runtime_budget_key"],
-            f"runs/{self.run_id}/audio_runtime_budget.json",
-        )
-
-    def test_uncertain_or_existing_budget_prevents_ec2_start(self):
-        for error in (
-            TimeoutError("Uncertain budget write"),
-            ClientError(
-                {"Error": {"Code": "PreconditionFailed"}}, "PutObject"
-            ),
-        ):
-            with self.subTest(error=str(error)):
-                request = self.make_release_request()
-                request["client"].put_object.side_effect = error
-                with patch.object(service, "start_audio_worker") as start:
-                    with self.assertRaises(type(error)):
-                        service.start_audio_worker_with_deadline(
-                            **request,
-                            execution_started_at=(
-                                datetime.now(timezone.utc).isoformat()
-                            ),
-                        )
-                    start.assert_not_called()
-
-                request["client"].put_object.assert_called_once()
-                self.assertEqual(request["ec2_client"].mock_calls, [])
-
-    def test_budgeted_start_rejects_wrong_owner_before_writing(self):
-        request = self.make_release_request()
-        request["owner_token"] = "wrong"
-        with patch.object(service, "start_audio_worker") as start:
-            with self.assertRaises(ValueError):
-                service.start_audio_worker_with_deadline(
-                    **request,
-                    execution_started_at=datetime.now(timezone.utc).isoformat(),
-                )
-            start.assert_not_called()
-
-        request["client"].put_object.assert_not_called()
-        self.assertEqual(request["ec2_client"].mock_calls, [])
-
-    def test_budget_expiring_during_storage_prevents_ec2_start(self):
-        request = self.make_release_request()
-        started = datetime(2026, 11, 13, tzinfo=timezone.utc)
-
-        with patch.object(service, "datetime", wraps=datetime) as clock:
-            clock.now.side_effect = [
-                started + timedelta(minutes=49, seconds=59),
-                started + timedelta(minutes=50),
-            ]
-            with patch.object(service, "start_audio_worker") as start:
-                with self.assertRaises(TimeoutError):
-                    service.start_audio_worker_with_deadline(
-                        **request, execution_started_at=started.isoformat(),
-                    )
-                start.assert_not_called()
-
-        request["client"].put_object.assert_called_once()
-
-    def test_lambda_routes_original_start_to_budgeted_startup(self):
-        from cloud.lambda_function import lambda_handler
-
-        request = self.make_release_request()
-        arguments = {
-            key: request[key] for key in (
-                "run_id", "execution_arn", "owner_token", "lock_etag",
-            )
-        }
-        arguments["execution_started_at"] = (
-            datetime.now(timezone.utc).isoformat()
-        )
-        with patch.object(
-            service, "start_audio_worker_with_deadline",
-            return_value={"status": "audio_instance_start_requested"},
-        ) as operation:
-            lambda_handler(
-                {"action": "start_audio_worker_with_deadline", **arguments},
-                None,
-            )
-            operation.assert_called_once_with(**arguments)
-
-            operation.reset_mock()
-            del arguments["execution_started_at"]
-            with self.assertRaises(KeyError):
-                lambda_handler(
-                    {"action": "start_audio_worker_with_deadline", **arguments},
-                    None,
-                )
-            operation.assert_not_called()
-
 
     def test_start_records_claim_before_requesting_ec2_start(self):
         request = self.make_release_request()
@@ -1367,7 +1199,7 @@ class AudioServiceTests(unittest.TestCase):
                     (
                         "mip-max-runtime.timer",
                         "NextElapseUSecMonotonic",
-                    ): "5400000000",
+                    ): "3600000000",
                     ("mip-audio-job.service", "UnitFileState"): "static",
                     ("mip-audio-job.service", "ActiveState"): "inactive",
                     ("mip-max-runtime.service", "ActiveState"): "inactive",
@@ -1502,7 +1334,7 @@ class AudioServiceTests(unittest.TestCase):
             "probe_token": "a" * 32,
             "boot_id": "12345678-1234-1234-1234-123456789abc",
             "uptime_seconds": 120.25,
-            "shutdown_deadline_monotonic_us": 5_400_000_000,
+            "shutdown_deadline_monotonic_us": 3_600_000_000,
             "generation_requested": False,
         }
         self.assertEqual(
@@ -1519,7 +1351,7 @@ class AudioServiceTests(unittest.TestCase):
             "probe_token": "a" * 32,
             "boot_id": "12345678-1234-1234-1234-123456789abc",
             "uptime_seconds": 120.25,
-            "shutdown_deadline_monotonic_us": 5_400_000_000,
+            "shutdown_deadline_monotonic_us": 3_600_000_000,
             "generation_requested": False,
         }
         mutations = [
@@ -1534,11 +1366,11 @@ class AudioServiceTests(unittest.TestCase):
             {"uptime_seconds": float("nan")},
             {"uptime_seconds": float("inf")},
             {"uptime_seconds": 10 ** 400},
-            {"uptime_seconds": 5401},
+            {"uptime_seconds": 3601},
             {"shutdown_deadline_monotonic_us": True},
-            {"shutdown_deadline_monotonic_us": 5_400_000_000.0},
+            {"shutdown_deadline_monotonic_us": 3_600_000_000.0},
             {"shutdown_deadline_monotonic_us": 120_250_000},
-            {"shutdown_deadline_monotonic_us": 5_401_000_001},
+            {"shutdown_deadline_monotonic_us": 3_601_000_001},
             {"unexpected": "field"},
         ]
         outputs = [
@@ -1660,7 +1492,7 @@ class AudioServiceTests(unittest.TestCase):
                 "probe_token": token,
                 "boot_id": "23456789-1234-1234-1234-123456789abc",
                 "uptime_seconds": 150.0,
-                "shutdown_deadline_monotonic_us": 5_400_000_000,
+                "shutdown_deadline_monotonic_us": 3_600_000_000,
                 "generation_requested": False,
             }),
         }

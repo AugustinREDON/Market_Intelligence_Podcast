@@ -18,7 +18,7 @@ write_files:
       Description=MIP worker maximum runtime from each boot
 
       [Timer]
-      OnBootSec=90min
+      OnBootSec=60min
       AccuracySec=1s
       Unit=mip-max-runtime.service
 
