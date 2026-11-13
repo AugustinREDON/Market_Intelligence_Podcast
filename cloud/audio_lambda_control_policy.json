@@ -1,0 +1,44 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StartStopExistingAudioWorker",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": "arn:aws:ec2:us-east-2:340015815972:instance/i-0acf87a780fb97103"
+    },
+    {
+      "Sid": "SendShellCommandsToExistingAudioWorker",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:us-east-2::document/AWS-RunShellScript",
+        "arn:aws:ec2:us-east-2:340015815972:instance/i-0acf87a780fb97103"
+      ]
+    },
+    {
+      "Sid": "ReadWorkerAndCommandStatus",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReleaseExistingAudioWorkerOwnership",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/audio-worker/i-0acf87a780fb97103/ownership.json"
+    }
+  ]
+}
