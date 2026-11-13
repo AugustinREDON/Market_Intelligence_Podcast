@@ -1037,11 +1037,12 @@
       "Type": "Task",
       "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
       "Parameters": {
-        "action": "start_audio_worker",
+        "action": "start_audio_worker_with_deadline",
         "run_id.$": "$.run_context.run_id",
         "execution_arn.$": "$.audio_execution.arn",
         "owner_token.$": "$.audio_worker.owner_token",
-        "lock_etag.$": "$.audio_worker.lock_etag"
+        "lock_etag.$": "$.audio_worker.lock_etag",
+        "execution_started_at.$": "$$.Execution.StartTime"
       },
       "ResultPath": "$.audio_stage_result",
       "TimeoutSeconds": 125,

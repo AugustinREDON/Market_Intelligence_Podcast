@@ -96,8 +96,10 @@ def build_audio_states(*, lambda_arn, instance_id):
             ], "Next": "StartAudioWorker",
         }], "Default": "AudioOwnershipUnresolved",
     }
-    task("StartAudioWorker", "start_audio_worker", "CheckAudioWorkerStart",
-         "AudioStartupOutcomeUnresolved")
+    task("StartAudioWorker", "start_audio_worker_with_deadline", "CheckAudioWorkerStart",
+         "AudioStartupOutcomeUnresolved", extra={
+             "execution_started_at.$": "$$.Execution.StartTime",
+         })
     route("CheckAudioWorkerStart", {
         "audio_instance_start_requested": "InitializeAudioConnectionPolling",
     }, "AudioStartupOutcomeUnresolved")
