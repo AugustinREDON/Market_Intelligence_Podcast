@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-
+from cloud.step_functions.audio_workflow import build_audio_states
 
 LAMBDA_ARN = (
     "arn:aws:lambda:us-east-2:340015815972:"
@@ -48,6 +48,108 @@ def same_run(path):
         "Variable": f"{path}.run_id",
         "StringEqualsPath": "$.run_context.run_id",
     }
+
+
+def apply_shared_deadlines(states):
+    """Gate all tasks against deadlines derived once from execution start."""
+    cleanup_actions = {
+        "monitor_audio_worker_shutdown",
+        "submit_audio_worker_stop",
+        "release_acknowledged_audio_worker",
+    }
+    before_acknowledgement = {
+        "check_audio_worker_connection",
+        "submit_audio_safeguard_check",
+        "retrieve_audio_safeguard_check",
+        "prepare_audio_handoff",
+        "submit_audio_handoff",
+        "retrieve_audio_handoff",
+        "submit_audio_service_start",
+        "retrieve_audio_service_start",
+    }
+    gates = {}
+    additions = {}
+    for name, state in states.items():
+        if state["Type"] != "Task":
+            continue
+        action = state["Parameters"]["action"]
+        deadline = "work_deadline"
+        expired = "WorkflowWorkDeadlineExceeded"
+
+        if action in cleanup_actions:
+            deadline = "cleanup_deadline"
+            expired = "WorkflowCleanupDeadlineExceeded"
+        elif action == "start_audio_worker":
+            expired = "WorkflowWorkDeadlineOwnershipRetained"
+        elif action in before_acknowledgement:
+            expired = "RecordWorkDeadlineBeforeAcknowledgement"
+        elif action == "monitor_audio_completion":
+            expired = "RecordWorkDeadlineAfterAcknowledgement"
+
+        gate = f"BudgetBefore{name}"
+        gates[name] = gate
+        additions[gate] = {
+            "Type": "Choice",
+            "Choices": [{
+                "Variable": "$$.State.EnteredTime",
+                "TimestampLessThanPath": f"$.workflow_budget.{deadline}",
+                "Next": name,
+            }],
+            "Default": expired,
+        }
+
+    # Redirect existing transitions; each new guard enters its original task.
+    for state in states.values():
+        for field in ("Next", "Default"):
+            if field in state:
+                state[field] = gates.get(state[field], state[field])
+        for rule in state.get("Choices", []):
+            rule["Next"] = gates.get(rule["Next"], rule["Next"])
+        for catcher in state.get("Catch", []):
+            catcher["Next"] = gates.get(catcher["Next"], catcher["Next"])
+    states.update(additions)
+
+    states["InitializeWorkflowBudget"] = {
+        "Type": "Pass",
+        "QueryLanguage": "JSONata",
+        "Output": (
+            "{% $merge([$states.input, {'workflow_budget': {"
+            "'work_deadline': $fromMillis($toMillis($states.context.Execution.StartTime) + 3000000),"
+            "'cleanup_deadline': $fromMillis($toMillis($states.context.Execution.StartTime) + 3600000)"
+            "}}]) %}"
+        ),
+        "Next": "CheckAuthorization",
+    }
+
+    for name, next_state in (
+        ("RecordWorkDeadlineBeforeAcknowledgement",
+         "BeginUnacknowledgedAudioCleanup"),
+        ("RecordWorkDeadlineAfterAcknowledgement",
+         "InitializeAcknowledgedAudioShutdownPolling"),
+    ):
+        states[name] = {
+            "Type": "Pass",
+            "Result": {"Error": "WorkflowWorkDeadlineExceeded"},
+            "ResultPath": "$.audio_failure",
+            "Next": next_state,
+        }
+
+    for name, cause in {
+        "WorkflowWorkDeadlineExceeded": (
+            "Shared work deadline reached before EC2 startup. "
+            "No further work is submitted."
+        ),
+        "WorkflowWorkDeadlineOwnershipRetained": (
+            "Shared work deadline reached before EC2 startup. "
+            "Ownership retained for review."
+        ),
+        "WorkflowCleanupDeadlineExceeded": (
+            "Shared one-hour deadline reached. "
+            "Ownership retained; inspect shutdown evidence."
+        ),
+    }.items():
+        states[name] = {"Type": "Fail", "Error": name, "Cause": cause}
+
 
 
 def build_definition():
@@ -421,19 +523,24 @@ def build_definition():
                         "BooleanEquals": False,
                     },
                 ],
-                "Next": "AudioJobPrepared",
+                "Next": "InitializeAudioExecution",
             }
         ],
         "UnexpectedStageResult",
     )
 
-    states["AudioJobPrepared"] = {"Type": "Succeed"}
+    states.update(build_audio_states(
+        lambda_arn=LAMBDA_ARN,
+        instance_id="i-0acf87a780fb97103",
+    ))
+
+    apply_shared_deadlines(states)
 
     return {
-        "Comment": "Manual briefing-to-script pipeline. No scheduling.",
+        "Comment": "Manual briefing-to-script-to-audio pipeline. No scheduling.",
         "QueryLanguage": "JSONPath",
-        "StartAt": "CheckAuthorization",
-        "TimeoutSeconds": 7200,
+        "StartAt": "InitializeWorkflowBudget",
+        "TimeoutSeconds": 3600,
         "States": states,
     }
 

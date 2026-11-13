@@ -8,7 +8,7 @@ import copy
 import json
 import unittest
 from pathlib import Path
-
+from datetime import datetime
 from cloud.step_functions.build_workflow import (
     MAX_POLLS,
     WAIT_SECONDS,
@@ -20,15 +20,21 @@ MISSING = object()
 
 
 def read_path(data, path):
-    if not path.startswith("$."):
+    if path.startswith("$$."):
+        value = data.get("_test_context", {})
+        keys = path[3:].split(".")
+    elif path.startswith("$."):
+        value = data
+        keys = path[2:].split(".")
+    else:
         raise AssertionError(f"Unsupported path: {path}")
 
-    value = data
-    for key in path[2:].split("."):
+    for key in keys:
         if not isinstance(value, dict) or key not in value:
             return MISSING
         value = value[key]
     return value
+
 
 
 def matches_rule(rule, data):
@@ -65,6 +71,11 @@ def matches_rule(rule, data):
             and isinstance(other, str)
             and value == other
         )
+    if operator == "TimestampLessThanPath":
+        other = read_path(data, expected)
+        if not isinstance(value, str) or not isinstance(other, str):
+            return False
+        return datetime.fromisoformat(value) < datetime.fromisoformat(other)
 
     if operator == "BooleanEquals":
         return type(value) is bool and value is expected
@@ -77,6 +88,21 @@ def matches_rule(rule, data):
 
     raise AssertionError(f"Unsupported operator: {operator}")
 
+def route_choice(states, name, data):
+    state = states[name]
+    target = next(
+        (
+            rule["Next"]
+            for rule in state["Choices"]
+            if matches_rule(rule, data)
+        ),
+        state["Default"],
+    )
+    if target.startswith("BudgetBefore"):
+        return route_choice(states, target, data)
+    return target
+
+
 
 class TextWorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -86,16 +112,19 @@ class TextWorkflowTests(unittest.TestCase):
             "confirm_paid_generation": True,
             "no_prior_state": True,
             "run_context": {"run_id": "2026-10-28-998"},
+            "workflow_budget": {
+                "work_deadline": "2026-11-13T00:50:00Z",
+                "cleanup_deadline": "2026-11-13T01:00:00Z",
+            },
+            "_test_context": {
+                "State": {"EnteredTime": "2026-11-13T00:01:00Z"},
+            },
         }
         self.run_id = self.data["run_context"]["run_id"]
 
     def route(self, name):
-        state = self.states[name]
-        self.assertEqual(state["Type"], "Choice")
-        for rule in state["Choices"]:
-            if matches_rule(rule, self.data):
-                return rule["Next"]
-        return state["Default"]
+        return route_choice(self.states, name, self.data)
+
 
     def test_audio_preparation_requires_expected_result_and_run(self):
         task = self.states["PrepareAudio"]
@@ -120,7 +149,7 @@ class TextWorkflowTests(unittest.TestCase):
         self.data["audio_prepare"] = prepared.copy()
         self.assertEqual(
             self.route("CheckAudioPreparation"),
-            "AudioJobPrepared",
+            "InitializeAudioExecution",
         )
 
         for field, value in (

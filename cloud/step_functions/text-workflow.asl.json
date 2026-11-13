@@ -1,8 +1,8 @@
 {
-  "Comment": "Manual briefing-to-script pipeline. No scheduling.",
+  "Comment": "Manual briefing-to-script-to-audio pipeline. No scheduling.",
   "QueryLanguage": "JSONPath",
-  "StartAt": "CheckAuthorization",
-  "TimeoutSeconds": 7200,
+  "StartAt": "InitializeWorkflowBudget",
+  "TimeoutSeconds": 3600,
   "States": {
     "CheckAuthorization": {
       "Type": "Choice",
@@ -39,7 +39,7 @@
               "IsPresent": false
             }
           ],
-          "Next": "PrepareBriefingWithPrior"
+          "Next": "BudgetBeforePrepareBriefingWithPrior"
         },
         {
           "And": [
@@ -52,7 +52,7 @@
               "BooleanEquals": true
             }
           ],
-          "Next": "PrepareBriefingWithoutPrior"
+          "Next": "BudgetBeforePrepareBriefingWithoutPrior"
         }
       ],
       "Default": "InvalidInput"
@@ -115,7 +115,7 @@
               "StringEqualsPath": "$.run_context.run_id"
             }
           ],
-          "Next": "SubmitBriefing"
+          "Next": "BudgetBeforeSubmitBriefing"
         }
       ],
       "Default": "UnexpectedStageResult"
@@ -190,7 +190,7 @@
     "WaitForBriefing": {
       "Type": "Wait",
       "Seconds": 30,
-      "Next": "RetrieveBriefing"
+      "Next": "BudgetBeforeRetrieveBriefing"
     },
     "RetrieveBriefing": {
       "Type": "Task",
@@ -237,7 +237,7 @@
         {
           "Variable": "$.briefing_retrieve.status",
           "StringEquals": "completed_response_preserved",
-          "Next": "ValidateBriefing"
+          "Next": "BudgetBeforeValidateBriefing"
         },
         {
           "Variable": "$.briefing_retrieve.status",
@@ -318,7 +318,7 @@
               "StringEqualsPath": "$.briefing_retrieve.snapshot_filename"
             }
           ],
-          "Next": "PrepareScript"
+          "Next": "BudgetBeforePrepareScript"
         }
       ],
       "Default": "UnexpectedStageResult"
@@ -358,7 +358,7 @@
               "StringEqualsPath": "$.run_context.run_id"
             }
           ],
-          "Next": "SubmitScript"
+          "Next": "BudgetBeforeSubmitScript"
         }
       ],
       "Default": "UnexpectedStageResult"
@@ -433,7 +433,7 @@
     "WaitForScript": {
       "Type": "Wait",
       "Seconds": 30,
-      "Next": "RetrieveScript"
+      "Next": "BudgetBeforeRetrieveScript"
     },
     "RetrieveScript": {
       "Type": "Task",
@@ -480,7 +480,7 @@
         {
           "Variable": "$.script_retrieve.status",
           "StringEquals": "completed_response_preserved",
-          "Next": "ValidateScript"
+          "Next": "BudgetBeforeValidateScript"
         },
         {
           "Variable": "$.script_retrieve.status",
@@ -561,7 +561,7 @@
               "StringEqualsPath": "$.script_retrieve.snapshot_filename"
             }
           ],
-          "Next": "PrepareAudio"
+          "Next": "BudgetBeforePrepareAudio"
         }
       ],
       "Default": "UnexpectedStageResult"
@@ -639,13 +639,1913 @@
               "BooleanEquals": false
             }
           ],
-          "Next": "AudioJobPrepared"
+          "Next": "InitializeAudioExecution"
         }
       ],
       "Default": "UnexpectedStageResult"
     },
-    "AudioJobPrepared": {
+    "BeginUnacknowledgedAudioCleanup": {
+      "Type": "Pass",
+      "Parameters": {
+        "started_at.$": "$$.State.EnteredTime",
+        "stop_attempted": false,
+        "poll_count": 0
+      },
+      "ResultPath": "$.audio_cleanup",
+      "Next": "BudgetBeforeObserveUnacknowledgedAudioShutdown"
+    },
+    "ObserveUnacknowledgedAudioShutdown": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "monitor_audio_worker_shutdown",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$$.Execution.Id",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag",
+        "shutdown_wait_started_at.$": "$.audio_cleanup.started_at"
+      },
+      "ResultPath": "$.audio_cleanup_observation",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_cleanup_error",
+          "Next": "AudioCleanupUnresolved"
+        }
+      ],
+      "Next": "CheckUnacknowledgedAudioShutdown"
+    },
+    "CheckUnacknowledgedAudioShutdown": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_observation.status",
+              "StringEquals": "audio_worker_shutdown_confirmed"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "AudioFailedWorkerStoppedOwnershipRetained"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_observation.status",
+              "StringEquals": "audio_worker_shutdown_deadline_exceeded"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "AudioShutdownDeadlineExceeded"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_observation.status",
+              "StringEquals": "audio_worker_shutdown_pending"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_observation.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "ChooseUnacknowledgedAudioStop"
+        }
+      ],
+      "Default": "AudioCleanupUnresolved"
+    },
+    "ChooseUnacknowledgedAudioStop": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_observation.instance_state",
+              "StringEquals": "running"
+            },
+            {
+              "Variable": "$.audio_cleanup.stop_attempted",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "MarkUnacknowledgedAudioStopAttempt"
+        }
+      ],
+      "Default": "CountUnacknowledgedAudioShutdownPoll"
+    },
+    "MarkUnacknowledgedAudioStopAttempt": {
+      "Type": "Pass",
+      "Result": true,
+      "ResultPath": "$.audio_cleanup.stop_attempted",
+      "Next": "BudgetBeforeStopUnacknowledgedAudioWorker"
+    },
+    "StopUnacknowledgedAudioWorker": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_audio_worker_stop",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$$.Execution.Id",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_cleanup_stop",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_cleanup_error",
+          "Next": "AudioCleanupUnresolved"
+        }
+      ],
+      "Next": "CheckUnacknowledgedAudioStop"
+    },
+    "CheckUnacknowledgedAudioStop": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_stop.status",
+              "StringEquals": "audio_worker_stop_requested"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountUnacknowledgedAudioShutdownPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_stop.status",
+              "StringEquals": "audio_worker_shutdown_pending"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountUnacknowledgedAudioShutdownPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_cleanup_stop.status",
+              "StringEquals": "audio_worker_shutdown_confirmed"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.execution_arn",
+              "StringEqualsPath": "$.audio_worker.execution_arn"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_cleanup_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountUnacknowledgedAudioShutdownPoll"
+        }
+      ],
+      "Default": "AudioCleanupUnresolved"
+    },
+    "CountUnacknowledgedAudioShutdownPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "started_at.$": "$.audio_cleanup.started_at",
+        "stop_attempted.$": "$.audio_cleanup.stop_attempted",
+        "poll_count.$": "States.MathAdd($.audio_cleanup.poll_count, 1)"
+      },
+      "ResultPath": "$.audio_cleanup",
+      "Next": "CheckUnacknowledgedAudioShutdownPollLimit"
+    },
+    "CheckUnacknowledgedAudioShutdownPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.audio_cleanup.poll_count",
+          "NumericGreaterThanEquals": 21,
+          "Next": "AudioShutdownDeadlineExceeded"
+        }
+      ],
+      "Default": "WaitForUnacknowledgedAudioShutdown"
+    },
+    "WaitForUnacknowledgedAudioShutdown": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeObserveUnacknowledgedAudioShutdown"
+    },
+    "AudioFailedWorkerStoppedOwnershipRetained": {
+      "Type": "Fail",
+      "Error": "AudioFailedWorkerStoppedOwnershipRetained",
+      "Cause": "Worker observed stopped after audio failure. Ownership retained; reconcile outstanding commands. Original failure: $.audio_failure."
+    },
+    "AudioShutdownDeadlineExceeded": {
+      "Type": "Fail",
+      "Error": "AudioShutdownDeadlineExceeded",
+      "Cause": "Shutdown observation limit reached. Ownership retained. Inspect $.audio_failure and saved request evidence."
+    },
+    "AudioCleanupUnresolved": {
+      "Type": "Fail",
+      "Error": "AudioCleanupUnresolved",
+      "Cause": "Cleanup failed or returned unexpected evidence. Ownership retained. Inspect $.audio_failure and $.audio_cleanup_error."
+    },
+    "AudioStartupOutcomeUnresolved": {
+      "Type": "Fail",
+      "Error": "AudioStartupOutcomeUnresolved",
+      "Cause": "EC2 startup outcome unresolved. Do not restart, stop, or release automatically. Reconcile $.audio_failure and saved startup evidence."
+    },
+    "InitializeAudioExecution": {
+      "Type": "Pass",
+      "Parameters": {
+        "arn.$": "$$.Execution.Id"
+      },
+      "ResultPath": "$.audio_execution",
+      "Next": "BudgetBeforeAcquireAudioWorker"
+    },
+    "AcquireAudioWorker": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "acquire_audio_worker",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn"
+      },
+      "ResultPath": "$.audio_worker",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "AudioOwnershipUnresolved"
+        }
+      ],
+      "Next": "CheckAudioOwnership"
+    },
+    "CheckAudioOwnership": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_worker.status",
+              "StringEquals": "audio_worker_acquired"
+            },
+            {
+              "Variable": "$.audio_worker.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_worker.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_worker.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_worker.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CheckAudioOwnershipTokens"
+        }
+      ],
+      "Default": "AudioOwnershipUnresolved"
+    },
+    "CheckAudioOwnershipTokens": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_worker.owner_token",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.audio_worker.owner_token",
+              "IsString": true
+            },
+            {
+              "Not": {
+                "Variable": "$.audio_worker.owner_token",
+                "StringEquals": ""
+              }
+            },
+            {
+              "Variable": "$.audio_worker.lock_etag",
+              "IsPresent": true
+            },
+            {
+              "Variable": "$.audio_worker.lock_etag",
+              "IsString": true
+            },
+            {
+              "Not": {
+                "Variable": "$.audio_worker.lock_etag",
+                "StringEquals": ""
+              }
+            }
+          ],
+          "Next": "BudgetBeforeStartAudioWorker"
+        }
+      ],
+      "Default": "AudioOwnershipUnresolved"
+    },
+    "StartAudioWorker": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "start_audio_worker",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "AudioStartupOutcomeUnresolved"
+        }
+      ],
+      "Next": "CheckAudioWorkerStart"
+    },
+    "CheckAudioWorkerStart": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_instance_start_requested"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "InitializeAudioConnectionPolling"
+        }
+      ],
+      "Default": "AudioStartupOutcomeUnresolved"
+    },
+    "InitializeAudioConnectionPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.AudioConnection_poll",
+      "Next": "BudgetBeforeCheckAudioConnection"
+    },
+    "CountAudioConnectionPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AudioConnection_poll.count, 1)"
+      },
+      "ResultPath": "$.AudioConnection_poll",
+      "Next": "CheckAudioConnectionPollLimit"
+    },
+    "CheckAudioConnectionPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AudioConnection_poll.count",
+          "NumericGreaterThanEquals": 20,
+          "Next": "RecordAudioStageFailure"
+        }
+      ],
+      "Default": "WaitForAudioConnection"
+    },
+    "WaitForAudioConnection": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeCheckAudioConnection"
+    },
+    "CheckAudioConnection": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "check_audio_worker_connection",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "RouteAudioConnection"
+    },
+    "RouteAudioConnection": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_worker_connection_ready"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "BudgetBeforeSubmitAudioSafeguards"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_worker_connection_pending"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAudioConnectionPoll"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "SubmitAudioSafeguards": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_audio_safeguard_check",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioSafeguardsSubmission"
+    },
+    "CheckAudioSafeguardsSubmission": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_safeguard_check_submitted"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "InitializeAudioSafeguardsPolling"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "InitializeAudioSafeguardsPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.AudioSafeguards_poll",
+      "Next": "BudgetBeforeRetrieveAudioSafeguards"
+    },
+    "CountAudioSafeguardsPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AudioSafeguards_poll.count, 1)"
+      },
+      "ResultPath": "$.AudioSafeguards_poll",
+      "Next": "CheckAudioSafeguardsPollLimit"
+    },
+    "CheckAudioSafeguardsPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AudioSafeguards_poll.count",
+          "NumericGreaterThanEquals": 20,
+          "Next": "RecordAudioStageFailure"
+        }
+      ],
+      "Default": "WaitForAudioSafeguards"
+    },
+    "WaitForAudioSafeguards": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeRetrieveAudioSafeguards"
+    },
+    "RetrieveAudioSafeguards": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "retrieve_audio_safeguard_check",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioSafeguardsResult"
+    },
+    "CheckAudioSafeguardsResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_safeguard_check_pending"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAudioSafeguardsPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_safeguards_verified"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "BudgetBeforePrepareAudioHandoff"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "SubmitAudioHandoff": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_audio_handoff",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioHandoffSubmission"
+    },
+    "CheckAudioHandoffSubmission": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_handoff_submitted"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "InitializeAudioHandoffPolling"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "InitializeAudioHandoffPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.AudioHandoff_poll",
+      "Next": "BudgetBeforeRetrieveAudioHandoff"
+    },
+    "CountAudioHandoffPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AudioHandoff_poll.count, 1)"
+      },
+      "ResultPath": "$.AudioHandoff_poll",
+      "Next": "CheckAudioHandoffPollLimit"
+    },
+    "CheckAudioHandoffPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AudioHandoff_poll.count",
+          "NumericGreaterThanEquals": 20,
+          "Next": "RecordAudioStageFailure"
+        }
+      ],
+      "Default": "WaitForAudioHandoff"
+    },
+    "WaitForAudioHandoff": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeRetrieveAudioHandoff"
+    },
+    "RetrieveAudioHandoff": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "retrieve_audio_handoff",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioHandoffResult"
+    },
+    "CheckAudioHandoffResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_handoff_pending"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAudioHandoffPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_job_handed_off"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "BudgetBeforeSubmitAudioServiceStart"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "SubmitAudioServiceStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_audio_service_start",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioServiceStartSubmission"
+    },
+    "CheckAudioServiceStartSubmission": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_service_start_submitted"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "InitializeAudioServiceStartPolling"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "InitializeAudioServiceStartPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.AudioServiceStart_poll",
+      "Next": "BudgetBeforeRetrieveAudioServiceStart"
+    },
+    "CountAudioServiceStartPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AudioServiceStart_poll.count, 1)"
+      },
+      "ResultPath": "$.AudioServiceStart_poll",
+      "Next": "CheckAudioServiceStartPollLimit"
+    },
+    "CheckAudioServiceStartPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AudioServiceStart_poll.count",
+          "NumericGreaterThanEquals": 20,
+          "Next": "RecordAudioStageFailure"
+        }
+      ],
+      "Default": "WaitForAudioServiceStart"
+    },
+    "WaitForAudioServiceStart": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeRetrieveAudioServiceStart"
+    },
+    "RetrieveAudioServiceStart": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "retrieve_audio_service_start",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioServiceStartResult"
+    },
+    "CheckAudioServiceStartResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_service_start_pending"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "CountAudioServiceStartPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_service_start_acknowledged"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "InitializeAudioCompletionPolling"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "PrepareAudioHandoff": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "prepare_audio_handoff",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stage_result",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "BeginUnacknowledgedAudioCleanup"
+        }
+      ],
+      "Next": "CheckAudioHandoffPreparation"
+    },
+    "CheckAudioHandoffPreparation": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stage_result.status",
+              "StringEquals": "audio_handoff_prepared"
+            },
+            {
+              "Variable": "$.audio_stage_result.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stage_result.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stage_result.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stage_result.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "BudgetBeforeSubmitAudioHandoff"
+        }
+      ],
+      "Default": "RecordAudioStageFailure"
+    },
+    "RecordAudioStageFailure": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AudioStageUnsuccessfulOrUnexpected",
+        "result.$": "$.audio_stage_result"
+      },
+      "ResultPath": "$.audio_failure",
+      "Next": "BeginUnacknowledgedAudioCleanup"
+    },
+    "InitializeAudioCompletionPolling": {
+      "Type": "Pass",
+      "Result": {
+        "count": 0
+      },
+      "ResultPath": "$.AudioCompletion_poll",
+      "Next": "BudgetBeforeMonitorAudioCompletion"
+    },
+    "CountAudioCompletionPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AudioCompletion_poll.count, 1)"
+      },
+      "ResultPath": "$.AudioCompletion_poll",
+      "Next": "CheckAudioCompletionPollLimit"
+    },
+    "CheckAudioCompletionPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AudioCompletion_poll.count",
+          "NumericGreaterThanEquals": 121,
+          "Next": "RecordAudioCompletionFailure"
+        }
+      ],
+      "Default": "WaitForAudioCompletion"
+    },
+    "WaitForAudioCompletion": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeMonitorAudioCompletion"
+    },
+    "MonitorAudioCompletion": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "monitor_audio_completion",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_completion",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_failure",
+          "Next": "InitializeAcknowledgedAudioShutdownPolling"
+        }
+      ],
+      "Next": "CheckAudioCompletionResult"
+    },
+    "CheckAudioCompletionResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_completion.status",
+              "StringEquals": "audio_completion_verified"
+            },
+            {
+              "Variable": "$.audio_completion.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_completion.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_completion.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            }
+          ],
+          "Next": "InitializeAcknowledgedAudioShutdownPolling"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_completion.status",
+              "StringEquals": "audio_completion_waiting"
+            },
+            {
+              "Variable": "$.audio_completion.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_completion.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_completion.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            }
+          ],
+          "Next": "CountAudioCompletionPoll"
+        }
+      ],
+      "Default": "RecordAudioCompletionFailure"
+    },
+    "RecordAudioCompletionFailure": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AudioCompletionUnsuccessfulOrUnexpected",
+        "result.$": "$.audio_completion"
+      },
+      "ResultPath": "$.audio_failure",
+      "Next": "InitializeAcknowledgedAudioShutdownPolling"
+    },
+    "InitializeAcknowledgedAudioShutdownPolling": {
+      "Type": "Pass",
+      "ResultPath": "$.AcknowledgedAudioShutdown_poll",
+      "Next": "BudgetBeforeObserveAcknowledgedAudioShutdown",
+      "Parameters": {
+        "count": 0,
+        "started_at.$": "$$.State.EnteredTime",
+        "stop_attempted": false
+      }
+    },
+    "CountAcknowledgedAudioShutdownPoll": {
+      "Type": "Pass",
+      "Parameters": {
+        "count.$": "States.MathAdd($.AcknowledgedAudioShutdown_poll.count, 1)",
+        "started_at.$": "$.AcknowledgedAudioShutdown_poll.started_at",
+        "stop_attempted.$": "$.AcknowledgedAudioShutdown_poll.stop_attempted"
+      },
+      "ResultPath": "$.AcknowledgedAudioShutdown_poll",
+      "Next": "CheckAcknowledgedAudioShutdownPollLimit"
+    },
+    "CheckAcknowledgedAudioShutdownPollLimit": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.AcknowledgedAudioShutdown_poll.count",
+          "NumericGreaterThanEquals": 21,
+          "Next": "AudioShutdownDeadlineExceeded"
+        }
+      ],
+      "Default": "WaitForAcknowledgedAudioShutdown"
+    },
+    "WaitForAcknowledgedAudioShutdown": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "BudgetBeforeObserveAcknowledgedAudioShutdown"
+    },
+    "ObserveAcknowledgedAudioShutdown": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "monitor_audio_worker_shutdown",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag",
+        "shutdown_wait_started_at.$": "$.AcknowledgedAudioShutdown_poll.started_at"
+      },
+      "ResultPath": "$.audio_shutdown",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_cleanup_error",
+          "Next": "AudioCleanupUnresolved"
+        }
+      ],
+      "Next": "CheckAcknowledgedAudioShutdown"
+    },
+    "CheckAcknowledgedAudioShutdown": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_shutdown.status",
+              "StringEquals": "audio_worker_shutdown_confirmed"
+            },
+            {
+              "Variable": "$.audio_shutdown.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_shutdown.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_shutdown.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_shutdown.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "BudgetBeforeReleaseAcknowledgedAudioWorker"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_shutdown.status",
+              "StringEquals": "audio_worker_shutdown_pending"
+            },
+            {
+              "Variable": "$.audio_shutdown.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_shutdown.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_shutdown.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_shutdown.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "ChooseAcknowledgedAudioStop"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_shutdown.status",
+              "StringEquals": "audio_worker_shutdown_deadline_exceeded"
+            },
+            {
+              "Variable": "$.audio_shutdown.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_shutdown.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_shutdown.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_shutdown.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "AudioShutdownDeadlineExceeded"
+        }
+      ],
+      "Default": "AudioCleanupUnresolved"
+    },
+    "ChooseAcknowledgedAudioStop": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_shutdown.instance_state",
+              "StringEquals": "running"
+            },
+            {
+              "Variable": "$.AcknowledgedAudioShutdown_poll.stop_attempted",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "MarkAcknowledgedAudioStopAttempt"
+        }
+      ],
+      "Default": "CountAcknowledgedAudioShutdownPoll"
+    },
+    "MarkAcknowledgedAudioStopAttempt": {
+      "Type": "Pass",
+      "Result": true,
+      "ResultPath": "$.AcknowledgedAudioShutdown_poll.stop_attempted",
+      "Next": "BudgetBeforeStopAcknowledgedAudioWorker"
+    },
+    "StopAcknowledgedAudioWorker": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "submit_audio_worker_stop",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_stop",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_cleanup_error",
+          "Next": "AudioCleanupUnresolved"
+        }
+      ],
+      "Next": "CheckAcknowledgedAudioStop"
+    },
+    "CheckAcknowledgedAudioStop": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stop.status",
+              "StringEquals": "audio_worker_stop_requested"
+            },
+            {
+              "Variable": "$.audio_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stop.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAcknowledgedAudioShutdownPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stop.status",
+              "StringEquals": "audio_worker_shutdown_pending"
+            },
+            {
+              "Variable": "$.audio_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stop.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAcknowledgedAudioShutdownPoll"
+        },
+        {
+          "And": [
+            {
+              "Variable": "$.audio_stop.status",
+              "StringEquals": "audio_worker_shutdown_confirmed"
+            },
+            {
+              "Variable": "$.audio_stop.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_stop.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_stop.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_stop.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "CountAcknowledgedAudioShutdownPoll"
+        }
+      ],
+      "Default": "AudioCleanupUnresolved"
+    },
+    "ReleaseAcknowledgedAudioWorker": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-2:340015815972:function:mip_generate_text",
+      "Parameters": {
+        "action": "release_acknowledged_audio_worker",
+        "run_id.$": "$.run_context.run_id",
+        "execution_arn.$": "$.audio_execution.arn",
+        "owner_token.$": "$.audio_worker.owner_token",
+        "lock_etag.$": "$.audio_worker.lock_etag"
+      },
+      "ResultPath": "$.audio_release",
+      "TimeoutSeconds": 125,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.audio_cleanup_error",
+          "Next": "AudioCleanupUnresolved"
+        }
+      ],
+      "Next": "CheckAcknowledgedAudioRelease"
+    },
+    "CheckAcknowledgedAudioRelease": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_release.status",
+              "StringEquals": "audio_worker_released"
+            },
+            {
+              "Variable": "$.audio_release.run_id",
+              "StringEqualsPath": "$.run_context.run_id"
+            },
+            {
+              "Variable": "$.audio_release.execution_arn",
+              "StringEqualsPath": "$.audio_execution.arn"
+            },
+            {
+              "Variable": "$.audio_release.instance_id",
+              "StringEquals": "i-0acf87a780fb97103"
+            },
+            {
+              "Variable": "$.audio_release.generation_requested",
+              "BooleanEquals": false
+            }
+          ],
+          "Next": "ChooseFinalAudioOutcome"
+        }
+      ],
+      "Default": "AudioCleanupUnresolved"
+    },
+    "ChooseFinalAudioOutcome": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.audio_failure",
+              "IsPresent": false
+            },
+            {
+              "Variable": "$.audio_completion.status",
+              "StringEquals": "audio_completion_verified"
+            }
+          ],
+          "Next": "AudioPipelineSucceeded"
+        }
+      ],
+      "Default": "AudioFailedAfterCleanup"
+    },
+    "AudioPipelineSucceeded": {
       "Type": "Succeed"
+    },
+    "AudioOwnershipUnresolved": {
+      "Type": "Fail",
+      "Error": "AudioOwnershipUnresolved",
+      "Cause": "Worker busy or ownership uncertain. Inspect evidence; do not start or release."
+    },
+    "AudioFailedAfterCleanup": {
+      "Type": "Fail",
+      "Error": "AudioFailedAfterCleanup",
+      "Cause": "Audio failed; worker stopped and ownership released. Inspect $.audio_failure."
+    },
+    "BudgetBeforePrepareBriefingWithPrior": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "PrepareBriefingWithPrior"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforePrepareBriefingWithoutPrior": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "PrepareBriefingWithoutPrior"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeSubmitBriefing": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "SubmitBriefing"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeRetrieveBriefing": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "RetrieveBriefing"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeValidateBriefing": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "ValidateBriefing"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforePrepareScript": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "PrepareScript"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeSubmitScript": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "SubmitScript"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeRetrieveScript": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "RetrieveScript"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeValidateScript": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "ValidateScript"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforePrepareAudio": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "PrepareAudio"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeObserveUnacknowledgedAudioShutdown": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.cleanup_deadline",
+          "Next": "ObserveUnacknowledgedAudioShutdown"
+        }
+      ],
+      "Default": "WorkflowCleanupDeadlineExceeded"
+    },
+    "BudgetBeforeStopUnacknowledgedAudioWorker": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.cleanup_deadline",
+          "Next": "StopUnacknowledgedAudioWorker"
+        }
+      ],
+      "Default": "WorkflowCleanupDeadlineExceeded"
+    },
+    "BudgetBeforeAcquireAudioWorker": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "AcquireAudioWorker"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineExceeded"
+    },
+    "BudgetBeforeStartAudioWorker": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "StartAudioWorker"
+        }
+      ],
+      "Default": "WorkflowWorkDeadlineOwnershipRetained"
+    },
+    "BudgetBeforeCheckAudioConnection": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "CheckAudioConnection"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeSubmitAudioSafeguards": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "SubmitAudioSafeguards"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeRetrieveAudioSafeguards": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "RetrieveAudioSafeguards"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeSubmitAudioHandoff": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "SubmitAudioHandoff"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeRetrieveAudioHandoff": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "RetrieveAudioHandoff"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeSubmitAudioServiceStart": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "SubmitAudioServiceStart"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeRetrieveAudioServiceStart": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "RetrieveAudioServiceStart"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforePrepareAudioHandoff": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "PrepareAudioHandoff"
+        }
+      ],
+      "Default": "RecordWorkDeadlineBeforeAcknowledgement"
+    },
+    "BudgetBeforeMonitorAudioCompletion": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.work_deadline",
+          "Next": "MonitorAudioCompletion"
+        }
+      ],
+      "Default": "RecordWorkDeadlineAfterAcknowledgement"
+    },
+    "BudgetBeforeObserveAcknowledgedAudioShutdown": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.cleanup_deadline",
+          "Next": "ObserveAcknowledgedAudioShutdown"
+        }
+      ],
+      "Default": "WorkflowCleanupDeadlineExceeded"
+    },
+    "BudgetBeforeStopAcknowledgedAudioWorker": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.cleanup_deadline",
+          "Next": "StopAcknowledgedAudioWorker"
+        }
+      ],
+      "Default": "WorkflowCleanupDeadlineExceeded"
+    },
+    "BudgetBeforeReleaseAcknowledgedAudioWorker": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$$.State.EnteredTime",
+          "TimestampLessThanPath": "$.workflow_budget.cleanup_deadline",
+          "Next": "ReleaseAcknowledgedAudioWorker"
+        }
+      ],
+      "Default": "WorkflowCleanupDeadlineExceeded"
+    },
+    "InitializeWorkflowBudget": {
+      "Type": "Pass",
+      "QueryLanguage": "JSONata",
+      "Output": "{% $merge([$states.input, {'workflow_budget': {'work_deadline': $fromMillis($toMillis($states.context.Execution.StartTime) + 3000000),'cleanup_deadline': $fromMillis($toMillis($states.context.Execution.StartTime) + 3600000)}}]) %}",
+      "Next": "CheckAuthorization"
+    },
+    "RecordWorkDeadlineBeforeAcknowledgement": {
+      "Type": "Pass",
+      "Result": {
+        "Error": "WorkflowWorkDeadlineExceeded"
+      },
+      "ResultPath": "$.audio_failure",
+      "Next": "BeginUnacknowledgedAudioCleanup"
+    },
+    "RecordWorkDeadlineAfterAcknowledgement": {
+      "Type": "Pass",
+      "Result": {
+        "Error": "WorkflowWorkDeadlineExceeded"
+      },
+      "ResultPath": "$.audio_failure",
+      "Next": "InitializeAcknowledgedAudioShutdownPolling"
+    },
+    "WorkflowWorkDeadlineExceeded": {
+      "Type": "Fail",
+      "Error": "WorkflowWorkDeadlineExceeded",
+      "Cause": "Shared work deadline reached before EC2 startup. No further work is submitted."
+    },
+    "WorkflowWorkDeadlineOwnershipRetained": {
+      "Type": "Fail",
+      "Error": "WorkflowWorkDeadlineOwnershipRetained",
+      "Cause": "Shared work deadline reached before EC2 startup. Ownership retained for review."
+    },
+    "WorkflowCleanupDeadlineExceeded": {
+      "Type": "Fail",
+      "Error": "WorkflowCleanupDeadlineExceeded",
+      "Cause": "Shared one-hour deadline reached. Ownership retained; inspect shutdown evidence."
     }
   }
 }
