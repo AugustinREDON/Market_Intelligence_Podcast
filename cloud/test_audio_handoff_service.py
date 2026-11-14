@@ -197,6 +197,60 @@ class AudioHandoffServiceTests(unittest.TestCase):
         }
         return arguments, objects, request["ssm_client"]
 
+    def test_completion_handles_ssm_equal_timestamps_with_elapsed_time(self):
+        for elapsed, offset, accepted in (
+            ("PT0.988S", 0.823421, True),
+            ("PT0.988S", 1.2, False),
+            ("invalid", 0.823421, False),
+            ("PT301S", 0.823421, False),
+            (None, 0.823421, False),
+        ):
+            with self.subTest(elapsed=elapsed, offset=offset):
+                request, objects, ssm = self.make_completion_request()
+                evidence_key = (
+                    self.prefix + "audio_service_start_invocation.json"
+                )
+                evidence = json.loads(objects[evidence_key])
+                invocation = evidence["invocation"]
+                started = datetime.fromisoformat(
+                    invocation["ExecutionStartDateTime"]
+                )
+                if elapsed is not None:
+                    invocation["ExecutionElapsedTime"] = elapsed
+                objects[evidence_key] = json.dumps(evidence).encode()
+
+                guest_key = (
+                    self.prefix + "audio_service_start_execution_claim.json"
+                )
+                guest = json.loads(objects[guest_key])
+                guest["requested_at"] = (
+                    started + timedelta(seconds=offset)
+                ).isoformat()
+                objects[guest_key] = json.dumps(guest).encode()
+
+                storage = service.S3RunStorage(
+                    bucket=request["bucket"], client=request["client"]
+                )
+                with patch.object(service, "datetime", wraps=datetime) as clock:
+                    clock.now.return_value = started + timedelta(seconds=2)
+                    if accepted:
+                        result = service._load_startup_acknowledgement(
+                            storage, self.payload
+                        )
+                        self.assertEqual(
+                            result["requested_at"], guest["requested_at"]
+                        )
+                    else:
+                        with self.assertRaises(ValueError):
+                            service._load_startup_acknowledgement(
+                                storage, self.payload
+                            )
+
+                request["client"].put_object.assert_not_called()
+                request["client"].delete_object.assert_not_called()
+                self.assertEqual(ssm.mock_calls, [])
+
+
     def test_monitor_classifies_pending_completion_without_mutations(self):
         for state, age_minutes, expected in (
             ("running", 20, "audio_completion_waiting"),

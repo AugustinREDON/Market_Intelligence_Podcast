@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 import json
 import os
 from uuid import UUID
-
+import re
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -530,6 +530,7 @@ def retrieve_audio_service_start(
         "CommandId", "InstanceId", "DocumentName", "Comment", "PluginName",
         "Status", "StatusDetails", "ResponseCode",
         "ExecutionStartDateTime", "ExecutionEndDateTime",
+        "ExecutionElapsedTime",
         "StandardOutputContent", "StandardErrorContent",
     )
     evidence_name = "audio_service_start_invocation.json"
@@ -664,7 +665,36 @@ def _load_startup_acknowledgement(storage, payload):
         raise ValueError("Guest startup claim does not match ownership")
 
     guest_requested = _timestamp(guest_claim["requested_at"])
-    if not started <= guest_requested <= finished:
+    execution_end = finished
+
+    # SSM can report equal start/end timestamps with nonzero elapsed time.
+    # Keep the saved timestamps intact and reconstruct only this check's end.
+    elapsed = invocation.get("ExecutionElapsedTime")
+    if started == finished and elapsed is not None:
+        match = re.fullmatch(
+            r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d{1,6})?)S)?",
+            elapsed if isinstance(elapsed, str) else "",
+        )
+        if match is None or not any(match.groups()):
+            raise ValueError("Invalid SSM startup elapsed time")
+
+        hours, minutes, seconds = match.groups()
+        duration = timedelta(
+            hours=int(hours or 0),
+            minutes=int(minutes or 0),
+            seconds=float(seconds or 0),
+        )
+        limit = timedelta(
+            seconds=int(request["Parameters"]["executionTimeout"][0])
+        )
+        if not timedelta(0) <= duration <= limit:
+            raise ValueError("SSM startup elapsed time exceeds execution limit")
+
+        execution_end = started + duration
+        if execution_end > datetime.now(timezone.utc):
+            raise ValueError("SSM startup elapsed time ends in the future")
+
+    if not started <= guest_requested <= execution_end:
         raise ValueError("Guest startup claim is outside the startup execution")
 
     return {
