@@ -1088,7 +1088,38 @@ require(
     "Shutdown timer is not waiting",
 )
 
-deadline_us = int(systemctl(
+def duration_microseconds(value):
+    import re
+    from decimal import Decimal
+
+    # Support raw microseconds and systemd's formatted durations.
+    if re.fullmatch(r"[0-9]+", value):
+        return int(value)
+
+    factors = {
+        "h": 3_600_000_000,
+        "min": 60_000_000,
+        "s": 1_000_000,
+        "ms": 1_000,
+        "us": 1,
+        "µs": 1,
+        "μs": 1,
+    }
+    parts = value.split()
+    require(bool(parts), "Missing shutdown timer duration")
+    total = Decimal(0)
+    for part in parts:
+        match = re.fullmatch(
+            r"([0-9]+(?:\.[0-9]+)?)(h|min|s|ms|us|µs|μs)",
+            part,
+        )
+        require(match is not None, "Invalid shutdown timer duration")
+        total += Decimal(match[1]) * factors[match[2]]
+    require(total == int(total), "Shutdown duration is not whole microseconds")
+    return int(total)
+
+
+deadline_us = duration_microseconds(systemctl(
     "show",
     "mip-max-runtime.timer",
     "--property=NextElapseUSecMonotonic",

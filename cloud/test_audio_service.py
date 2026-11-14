@@ -1199,7 +1199,7 @@ class AudioServiceTests(unittest.TestCase):
                     (
                         "mip-max-runtime.timer",
                         "NextElapseUSecMonotonic",
-                    ): "3600000000",
+                    ): "1h",
                     ("mip-audio-job.service", "UnitFileState"): "static",
                     ("mip-audio-job.service", "ActiveState"): "inactive",
                     ("mip-max-runtime.service", "ActiveState"): "inactive",
@@ -1327,6 +1327,38 @@ class AudioServiceTests(unittest.TestCase):
                     self.assertFalse(result["generation_requested"])
                 else:
                     self.assertEqual(output.getvalue(), "")
+
+    def test_safeguard_duration_parser(self):
+        import ast
+
+        namespace = {}
+        tree = ast.parse(AUDIO_SAFEGUARD_PROBE)
+        functions = ast.Module(
+            body=[
+                node
+                for node in tree.body
+                if isinstance(node, ast.FunctionDef)
+                and node.name in {"require", "duration_microseconds"}
+            ],
+            type_ignores=[],
+        )
+        exec(compile(functions, "<duration-parser-test>", "exec"), namespace)
+        parse = namespace["duration_microseconds"]
+
+        for value, expected in (
+            ("1h", 3_600_000_000),
+            ("1h 1s", 3_601_000_000),
+            ("59min 59.5s", 3_599_500_000),
+            ("1ms 2us", 1_002),
+            ("3600000000", 3_600_000_000),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(parse(value), expected)
+
+        for value in ("", "infinity", "-1s", "1h garbage", "0.1us"):
+            with self.subTest(value=value):
+                with self.assertRaises(RuntimeError):
+                    parse(value)
 
     def test_safeguard_output_accepts_expected_probe(self):
         probe = {
