@@ -16,7 +16,8 @@
       "Action": "s3:PutObject",
       "Resource": [
         "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio/*",
-        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio_submission_claim.json"
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio_submission_claim.json",
+        "arn:aws:s3:::mip-storage-340015815972-us-east-2/runs/*/audio_service_start_execution_claim.json"
       ]
     }
   ]
