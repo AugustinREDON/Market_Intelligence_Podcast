@@ -1,0 +1,107 @@
+/* ==========================================================================
+   Design tokens — Market Intelligence Podcast
+   Two themes share every layout token; only colour (and corner radius) change.
+   Contrast values are noted against the panel colour (WCAG 2.x).
+   ========================================================================== */
+
+:root {
+  /* Type */
+  --font-ui: 'Switzer', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-read: 'Source Serif 4', 'Source Serif Pro', Georgia, 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  --text-2xs: 0.6875rem; /* 11px – mono labels only */
+  --text-xs: 0.75rem; /* 12px */
+  --text-sm: 0.875rem; /* 14px */
+  --text-base: 1rem; /* 16px */
+  --text-read: 1.125rem; /* 18px – briefing body */
+  --text-lg: 1.25rem; /* 20px */
+  --text-xl: clamp(1.375rem, 1.1rem + 0.9vw, 1.75rem); /* 22–28px briefing title */
+
+  --leading-tight: 1.25;
+  --leading-ui: 1.45;
+  --leading-read: 1.68;
+  --measure: 70ch; /* comfortable reading width */
+
+  /* Space (4px grid) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  --container: 1320px;
+  --gutter: clamp(16px, 3vw, 28px);
+  --nav-h: 56px;
+  --sticky-offset: 0px; /* set at desktop when the top bar is sticky */
+
+  --dur-fast: 120ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Financial performance — reserved for positive/negative values only */
+  --pos: #4ade80;
+  --neg: #f87171;
+}
+
+/* ---------- Theme A — Forest green: calm, editorial, premium ---------- */
+:root,
+[data-theme='forest'] {
+  color-scheme: dark;
+  --bg: #0b1713;
+  --bg-deep: #08110e;
+  --panel: #12251d;
+  --panel-raised: #172d24; /* hover / nested */
+  --panel-inset: #0e1e18;
+  --border: #22392f;
+  --border-strong: #335346;
+  --text: #f2f3ed; /* 14.9:1 on panel */
+  --text-muted: #c2ccc4; /* 10.3:1 */
+  --text-faint: #93a69a; /* 6.0:1 */
+  --accent: #9cc5ac; /* 8.9:1 */
+  --accent-strong: #bfe0cb;
+  --accent-ink: #0b1713; /* text on accent fills */
+  --accent-soft: rgb(156 197 172 / 0.12);
+  --accent-line: rgb(156 197 172 / 0.38);
+  --sample: #e3c98a; /* demo/sample labels – amber, distinct from pos/neg */
+  --sample-soft: rgb(227 201 138 / 0.1);
+  --pending: #e3c98a;
+  --focus: #d8f0e0;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow-sticky: 0 1px 0 var(--border);
+  --pos: #5fe08f;
+  --neg: #ff8a80;
+}
+
+/* ---------- Theme B — Dark blue: analytical, sharp, terminal ---------- */
+[data-theme='blue'] {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --bg-deep: #080d18;
+  --panel: #131f33;
+  --panel-raised: #18273f;
+  --panel-inset: #0f192a;
+  --border: #22314a;
+  --border-strong: #34496b;
+  --text: #edf2f7; /* 14.6:1 on panel */
+  --text-muted: #bccadb; /* 10.0:1 */
+  --text-faint: #8fa1b9; /* 6.0:1 */
+  --accent: #8cb4e8; /* 7.8:1 */
+  --accent-strong: #b5d0f3;
+  --accent-ink: #0b1220;
+  --accent-soft: rgb(140 180 232 / 0.12);
+  --accent-line: rgb(140 180 232 / 0.4);
+  --sample: #e8c77d;
+  --sample-soft: rgb(232 199 125 / 0.1);
+  --pending: #e8c77d;
+  --focus: #cfe1fa;
+  --radius: 3px;
+  --radius-sm: 2px;
+  --shadow-sticky: 0 1px 0 var(--border);
+  --pos: #4ade80;
+  --neg: #f87171;
+}

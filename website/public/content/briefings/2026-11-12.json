@@ -1,0 +1,38 @@
+{
+  "editionId": "2026-11-12",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "Revenue fine, margins better"
+    },
+    {
+      "type": "paragraph",
+      "text": "With roughly two-thirds of large companies now reported, revenue growth is running at a modest pace while operating margins have surprised to the upside. Cost control is doing most of the work: slower hiring, tighter inventory management and lower freight and energy costs than a year ago."
+    },
+    {
+      "type": "heading",
+      "text": "Guidance: confident, with caveats"
+    },
+    {
+      "type": "paragraph",
+      "text": "Management teams have largely reiterated full-year targets but widened their ranges. The word **discipline** appears with unusual frequency on earnings calls, typically referring to hiring, inventory and capital spending outside priority areas."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Capital-light business models are being rewarded as refinancing costs rise.",
+        "Consumer companies report a split between resilient higher-income spending and trading down elsewhere.",
+        "Industrial firms cite steady order books but longer customer decision cycles."
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "Why it matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Markets are paying for evidence of durable margins rather than headline beats. With the cost of capital higher for longer, companies that can fund growth internally hold a structural advantage."
+    }
+  ]
+}

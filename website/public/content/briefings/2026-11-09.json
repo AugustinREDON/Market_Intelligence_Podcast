@@ -1,0 +1,31 @@
+{
+  "editionId": "2026-11-09",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "The week ahead"
+    },
+    {
+      "type": "paragraph",
+      "text": "A busy calendar of inflation data, central-bank speeches and late-season earnings. The common thread: whether services inflation is cooling fast enough to justify the rate cuts markets still hope for."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Inflation data**: watch services excluding shelter.",
+        "**Central-bank speakers**: any change in language on the balance of risks.",
+        "**AI regulation**: consultations on model-risk management in financial services.",
+        "**Earnings**: retailers and the remaining large technology firms."
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "Why it matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Markets have priced a slower path for rate cuts. Data that confirms that view should be absorbed calmly; a surprise in either direction could move longer-dated yields more than equities."
+    }
+  ]
+}

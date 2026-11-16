@@ -1,0 +1,38 @@
+{
+  "editionId": "2026-11-11",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "Long yields stay elevated"
+    },
+    {
+      "type": "paragraph",
+      "text": "Short-dated government bond yields have eased as traders push back their expectations for rate cuts, yet longer maturities have barely moved. The result is a steeper yield curve driven by the long end, a pattern consistent with a rising term premium."
+    },
+    {
+      "type": "heading",
+      "text": "What is the term premium?"
+    },
+    {
+      "type": "paragraph",
+      "text": "It is the extra return investors demand to hold a long-dated bond instead of rolling over short-term ones. Heavy government issuance, less predictable inflation and smaller central-bank balance sheets have all pushed it higher."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Mortgage and corporate borrowing costs track long yields more than policy rates.",
+        "Weak demand at long-dated auctions would reinforce the trend.",
+        "A faster disinflation path would be the most likely catalyst for relief."
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "Why it matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Even when policy rates fall, financing conditions may stay tighter than borrowers expect. The bond market is, in effect, sharing the work of monetary policy."
+    }
+  ]
+}

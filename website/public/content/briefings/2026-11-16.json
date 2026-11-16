@@ -1,0 +1,14 @@
+{
+  "editionId": "2026-11-16",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "Draft"
+    },
+    {
+      "type": "paragraph",
+      "text": "Unpublished draft used to verify that drafts are filtered out of the public site."
+    }
+  ]
+}

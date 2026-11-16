@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en-GB" data-theme="forest">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Market Intelligence Podcast — Daily briefing and episodes</title>
+    <meta
+      name="description"
+      content="Market Intelligence Podcast: a daily financial briefing and conversational podcast covering markets, macroeconomics, business, AI and regulation, hosted by Arthur Bennett and Jack Carter."
+    />
+    <meta property="og:title" content="Market Intelligence Podcast" />
+    <meta property="og:description" content="Daily financial briefing and podcast with Arthur Bennett and Jack Carter." />
+    <meta name="theme-color" content="#0B1713" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%230B1713'/%3E%3Ctext x='16' y='21' font-family='monospace' font-size='13' font-weight='700' text-anchor='middle' fill='%239CC5AC'%3EMI%3C/text%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://api.fontshare.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://api.fontshare.com/v2/css?f[]=switzer@400,500,600,700&display=swap" rel="stylesheet" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // Apply the saved theme before first paint to avoid a flash of the wrong theme.
+      (function () {
+        try {
+          var t = window.localStorage.getItem('mip.theme');
+          if (t === 'forest' || t === 'blue') document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          /* storage unavailable (e.g. sandboxed iframe): keep default */
+        }
+        // Page scope for route-specific styling (the Forest homepage). App.tsx keeps it in sync.
+        var h = window.location.hash;
+        var home = !h || h === '#' || h === '#/' || h.charAt(1) !== '/';
+        document.documentElement.setAttribute('data-page', home ? 'dashboard' : 'other');
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Market Intelligence Podcast requires JavaScript to load the latest briefing and episodes.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

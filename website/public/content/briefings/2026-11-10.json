@@ -1,0 +1,38 @@
+{
+  "editionId": "2026-11-10",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "A quieter dollar"
+    },
+    {
+      "type": "paragraph",
+      "text": "The US dollar has softened modestly against major peers as interest-rate differentials narrow. Moves have been orderly, with little sign of stress in funding markets."
+    },
+    {
+      "type": "heading",
+      "text": "Oil: supply versus demand"
+    },
+    {
+      "type": "paragraph",
+      "text": "Crude prices have been volatile in a range. Producers' supply discipline is offset by softer demand indicators from manufacturing surveys. Gold continues to attract steady buying as a diversifier."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Commodity currencies track oil and metals more closely than rate spreads this month.",
+        "Agricultural prices remain subdued after strong harvests.",
+        "Industrial metals respond to infrastructure and grid-investment headlines."
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "Why it matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "A calmer dollar eases financial conditions for emerging markets and for companies with large overseas revenues, while commodity volatility keeps inflation forecasts uncertain."
+    }
+  ]
+}

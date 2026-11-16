@@ -1,0 +1,114 @@
+{
+  "editionId": "2026-11-13",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    { "type": "heading", "text": "Markets at a glance" },
+    {
+      "type": "paragraph",
+      "text": "The week closes with a familiar tension. Company results have been better than feared, and credit markets remain calm, yet the macro picture refuses to deliver the clean disinflation that would justify a quick run of rate cuts. Equity indices have drifted rather than trended, with leadership rotating between large technology names and more defensive sectors on alternate days. Volatility is low by historical standards, which says more about investors' reluctance to commit than about genuine confidence."
+    },
+    {
+      "type": "table",
+      "caption": "Illustrative weekly moves (sample data, not market prices)",
+      "columns": ["Asset", "Level", "Week"],
+      "rows": [
+        ["Global equities (sample index)", "1,042.6", "+0.8%"],
+        ["US 10-year yield (sample)", "4.38%", "+0.06 pp"],
+        ["US dollar index (sample)", "101.9", "−0.4%"],
+        ["Brent crude (sample)", "$78.10", "−1.7%"],
+        ["Gold (sample)", "$2,412", "+1.1%"]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The more interesting signal is in the bond market. Shorter-dated yields have eased as traders trim expectations for near-term policy, but longer maturities have barely moved. That steepening tells us investors are less worried about the next six months than about the next six years: the size of government borrowing, the path of inflation once supply shocks fade, and how much compensation is needed to lock money away for a decade."
+    },
+
+    { "type": "heading", "text": "Macro: the last mile of disinflation" },
+    {
+      "type": "paragraph",
+      "text": "Goods inflation has largely normalised. Supply chains have healed, freight costs are unremarkable and discounting has returned to parts of retail. **Services inflation is the problem child.** Rents adjust slowly because leases reset only once a year, insurance premiums are still catching up with higher repair and replacement costs, and labour-intensive services such as hospitality and personal care pass wage growth straight through to prices."
+    },
+    {
+      "type": "paragraph",
+      "text": "None of this is alarming on its own. Wage growth is moderating, job openings have come down without a surge in unemployment, and household spending is cooling at a measured pace. The difficulty is speed. Central banks set policy based on where inflation is heading over the next year or two, and the services component is falling slowly enough to leave room for doubt."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Shelter costs** remain the largest single contributor to core services inflation, but new-lease measures point to further easing over the coming year.",
+        "**Insurance and repairs** are running well above pre-pandemic averages, a lagged effect of earlier increases in vehicle and building costs.",
+        "**Wage-sensitive services** are the swing factor; a further gradual slowdown in pay growth would do most of the remaining work."
+      ]
+    },
+
+    { "type": "heading", "text": "Rates and central banks: patience as policy" },
+    {
+      "type": "paragraph",
+      "text": "Across the major central banks, the message has converged on patience. Officials acknowledge the progress made, describe policy as restrictive, and then decline to commit to a timetable. Markets have responded by pushing expected cuts further out and reducing their number. That is a reasonable reaction, though it risks overcorrecting if the next few inflation prints surprise to the downside."
+    },
+    {
+      "type": "paragraph",
+      "text": "The more consequential development for borrowers is the **term premium**, the extra yield investors demand to hold long-dated bonds instead of rolling over short-term ones. After years near zero, it has returned. Heavy issuance, less predictable inflation and a smaller footprint from central-bank balance sheets all play a part. The practical effect is that long-term mortgage rates and corporate borrowing costs can stay elevated even as policy rates eventually come down. In effect, the bond market is doing some of the tightening for the central banks."
+    },
+    {
+      "type": "quote",
+      "text": "Policy rates set the price of money for tomorrow. The term premium sets the price of patience."
+    },
+
+    { "type": "heading", "text": "Business and earnings: margins hold, guidance hedges" },
+    {
+      "type": "paragraph",
+      "text": "With most of the reporting season behind us, the pattern is consistent. Revenue growth has slowed but remains positive for most sectors. Operating margins have held up better than expected, helped by tight cost control, slower hiring and lower input costs. Management guidance, however, has been carefully worded. Many companies have reiterated full-year targets while widening their ranges, which is corporate language for confidence with an escape hatch."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two themes stand out. First, the cost of capital has become a real line item again. Companies that borrowed cheaply several years ago face higher interest bills as that debt is refinanced, and capital-light business models are being rewarded accordingly. Second, consumer-facing firms report a split customer base: higher-income households are still spending on travel and experiences, while lower-income households are trading down and becoming more sensitive to promotions."
+    },
+
+    { "type": "heading", "text": "AI: from capital spending to cash flow" },
+    {
+      "type": "paragraph",
+      "text": "Investment in artificial-intelligence infrastructure remains enormous. Data centres, specialised chips, networking equipment and, increasingly, electricity supply are absorbing a large share of corporate capital budgets in the technology sector. What has changed is how investors judge that spending. Twelve months ago, ambitious capex plans were often greeted as evidence of strategic seriousness. Today, the market wants to see revenue."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Companies that can point to paying enterprise customers, usage-based revenue or measurable productivity gains are being rewarded.",
+        "Those that can only point to future potential face harder questions about depreciation schedules and returns on invested capital.",
+        "Power availability is emerging as a genuine constraint, pulling utilities and grid-equipment suppliers into the AI conversation."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "This is a healthy shift rather than a warning sign. Large technology cycles typically move from building capacity to monetising it, and the transition is rarely smooth. The risk to watch is not that spending stops, but that it continues while revenue lags, compressing returns for longer than investors are prepared to tolerate."
+    },
+
+    { "type": "heading", "text": "Regulation: disclosure catches up with deployment" },
+    {
+      "type": "paragraph",
+      "text": "Regulators are moving from principles to practice. In Europe, obligations under the [EU AI Act](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai) continue to phase in, with particular attention on systems classed as high-risk. Financial supervisors elsewhere are asking firms to document where AI models are used in credit decisions, trading and customer service, how those models are validated, and who is accountable when they get things wrong."
+    },
+    {
+      "type": "paragraph",
+      "text": "For listed companies, the more immediate pressure comes from disclosure. Investors and securities regulators increasingly expect firms to describe material AI-related risks, from model errors and data-protection exposure to dependency on a small number of infrastructure providers. Vague references to \"innovation\" in annual reports are giving way to more specific risk factors, a trend visible in filings searchable through [SEC EDGAR](https://www.sec.gov/edgar/search/)."
+    },
+
+    { "type": "heading", "text": "What to watch next week" },
+    {
+      "type": "list",
+      "items": [
+        "**Inflation releases**: focus on the services ex-shelter component rather than the headline figure.",
+        "**Central-bank speakers**: listen for any change in how officials describe the balance of risks.",
+        "**Long-dated bond auctions**: weak demand would reinforce the term-premium story.",
+        "**Late-season technology earnings**: look for AI revenue disclosure, not just capex guidance."
+      ]
+    },
+
+    { "type": "heading", "text": "The bottom line" },
+    {
+      "type": "paragraph",
+      "text": "The broad direction is still constructive: inflation is easing, growth is slowing gently rather than collapsing, and corporate balance sheets are in reasonable shape. The problem is tempo. Investors hoping for a quick sequence of rate cuts may need to settle for a slower one, and those hoping AI spending will pay for itself next quarter may need to extend their time horizon. Patience, it turns out, is not just a central-bank virtue. It is this season's most underpriced asset."
+    }
+  ]
+}

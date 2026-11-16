@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-13T07:31:00-05:00",
+  "isSampleContent": true,
+  "publication": {
+    "name": "Market Intelligence Podcast",
+    "description": "A daily financial briefing and conversational podcast on markets, macroeconomics, business, AI and regulation.",
+    "timeZone": "America/New_York",
+    "hosts": [
+      "Arthur Bennett",
+      "Jack Carter"
+    ]
+  },
+  "editions": [
+    {
+      "editionId": "2026-11-13",
+      "topics": [
+        "Macro",
+        "Rates",
+        "Earnings",
+        "AI",
+        "Regulation"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Sticky services inflation tests the patience of rate-cut optimists as the AI spending bill comes due",
+        "summary": "Markets head into Friday weighing a firmer-than-hoped services inflation picture against resilient earnings. Central banks are signalling patience, long-dated yields remain elevated, and investors are asking harder questions about the return on artificial-intelligence capital spending.",
+        "takeaways": [
+          "Services inflation is cooling more slowly than goods inflation, keeping the timing of rate cuts uncertain.",
+          "Long-dated bond yields stay elevated as the term premium, not policy rates, does more of the tightening.",
+          "AI infrastructure spending remains strong, but investors now reward evidence of revenue rather than ambition.",
+          "Regulators are sharpening their focus on AI disclosure and model risk in financial services."
+        ],
+        "publishedAt": "2026-11-13T06:45:00-05:00",
+        "bodyUrl": "briefings/2026-11-13.json",
+        "sources": [
+          {
+            "label": "Consumer Price Index",
+            "publisher": "U.S. Bureau of Labor Statistics",
+            "url": "https://www.bls.gov/cpi/"
+          },
+          {
+            "label": "FOMC meeting calendars and statements",
+            "publisher": "Federal Reserve",
+            "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+          },
+          {
+            "label": "Monetary policy decisions",
+            "publisher": "European Central Bank",
+            "url": "https://www.ecb.europa.eu/press/govcdec/mopo/html/index.en.html"
+          },
+          {
+            "label": "Daily Treasury par yield curve rates",
+            "publisher": "U.S. Department of the Treasury",
+            "url": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve"
+          },
+          {
+            "label": "EDGAR full-text search",
+            "publisher": "U.S. Securities and Exchange Commission",
+            "url": "https://www.sec.gov/edgar/search/"
+          },
+          {
+            "label": "AI Act regulatory framework",
+            "publisher": "European Commission",
+            "url": "https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai"
+          }
+        ],
+        "recap": "Markets head into Friday weighing a firmer-than-hoped services inflation picture against resilient earnings. Central banks are signalling patience rather than promising cuts, and long-dated yields remain elevated as investors demand more compensation for holding duration. In equities, the debate has moved on from how much companies spend on artificial intelligence to what that spending returns. Regulators, meanwhile, are turning their attention to how financial firms disclose and govern AI models."
+      },
+      "episode": {
+        "status": "published",
+        "episodeId": "ep-2026-11-13",
+        "title": "Sticky services, patient central banks and the AI spending bill",
+        "description": "Arthur and Jack unpack why services inflation is so slow to cool, what the term premium means for borrowers, and why investors have moved from 'tell me your vision' to 'show me your invoices'.",
+        "publishedAt": "2026-11-13T07:30:00-05:00",
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": "audio/mip-2026-11-13-demo.mp3",
+        "audioMimeType": "audio/mpeg",
+        "audioDurationSeconds": 125,
+        "audioBytes": 2001068,
+        "isDemoAudio": true
+      }
+    },
+    {
+      "editionId": "2026-11-12",
+      "topics": [
+        "Earnings",
+        "Business"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Earnings season's second act: margins, guidance and the cost of capital",
+        "summary": "Revenue growth has slowed, but margins are holding thanks to cost control. Guidance is cautious, and refinancing costs are back on the agenda.",
+        "takeaways": [
+          "Margins beat expectations on cost discipline.",
+          "Full-year guidance reiterated, with wider ranges.",
+          "Capital-light models rewarded as refinancing costs rise."
+        ],
+        "publishedAt": "2026-11-12T06:40:00-05:00",
+        "bodyUrl": "briefings/2026-11-12.json",
+        "sources": [
+          {
+            "label": "EDGAR full-text search",
+            "publisher": "U.S. Securities and Exchange Commission",
+            "url": "https://www.sec.gov/edgar/search/"
+          }
+        ]
+      },
+      "episode": {
+        "status": "published",
+        "episodeId": "ep-2026-11-12",
+        "title": "Margins, guidance and why every CFO suddenly loves the word 'discipline'",
+        "description": "A short look at the second half of earnings season: resilient margins, careful guidance and the return of the cost of capital.",
+        "publishedAt": "2026-11-12T07:25:00-05:00",
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": "audio/mip-2026-11-12-demo.mp3",
+        "audioMimeType": "audio/mpeg",
+        "audioDurationSeconds": 52,
+        "audioBytes": 828716,
+        "isDemoAudio": true
+      }
+    },
+    {
+      "editionId": "2026-11-11",
+      "topics": [
+        "Rates",
+        "Bonds"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Bond markets take the wheel as the term premium returns",
+        "summary": "Short-dated yields ease while long maturities hold firm, steepening the curve from the long end and keeping borrowing costs elevated.",
+        "takeaways": [
+          "Curve steepening driven by long maturities.",
+          "Term premium rising on issuance and inflation uncertainty."
+        ],
+        "publishedAt": "2026-11-11T06:45:00-05:00",
+        "bodyUrl": "briefings/2026-11-11.json",
+        "sources": [
+          {
+            "label": "Daily Treasury par yield curve rates",
+            "publisher": "U.S. Department of the Treasury",
+            "url": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve"
+          }
+        ]
+      },
+      "episode": {
+        "status": "published",
+        "episodeId": "ep-2026-11-11",
+        "title": "The bond market takes the wheel",
+        "description": "Why long-term yields can stay high even when rate-cut expectations fall, and what that means for mortgages and corporate borrowing.",
+        "publishedAt": "2026-11-11T07:35:00-05:00",
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": null,
+        "audioMimeType": null,
+        "audioDurationSeconds": null,
+        "audioBytes": null,
+        "isDemoAudio": false
+      }
+    },
+    {
+      "editionId": "2026-11-10",
+      "topics": [
+        "Currencies",
+        "Commodities"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Currencies, commodities and a quieter dollar",
+        "summary": "The dollar softens in an orderly way as rate differentials narrow, while oil trades in a volatile range and gold attracts steady demand.",
+        "takeaways": [
+          "Orderly dollar weakness.",
+          "Oil caught between supply discipline and softer demand."
+        ],
+        "publishedAt": "2026-11-10T06:50:00-05:00",
+        "bodyUrl": "briefings/2026-11-10.json",
+        "sources": []
+      },
+      "episode": {
+        "status": "published",
+        "episodeId": "ep-2026-11-10",
+        "title": "A quieter dollar and a noisier oil market",
+        "description": "Currencies, crude and gold: a calm dollar, a choppy oil market and the steady case for diversifiers.",
+        "publishedAt": "2026-11-10T07:40:00-05:00",
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": null,
+        "audioMimeType": null,
+        "audioDurationSeconds": null,
+        "audioBytes": null,
+        "isDemoAudio": false
+      }
+    },
+    {
+      "editionId": "2026-11-09",
+      "topics": [
+        "Week ahead",
+        "Macro",
+        "Regulation"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Week ahead: inflation data, central-bank speakers and AI regulation",
+        "summary": "A busy calendar tests whether services inflation is cooling fast enough to justify the rate cuts markets still hope for.",
+        "takeaways": [
+          "Watch services excluding shelter.",
+          "Listen for shifts in central-bank language."
+        ],
+        "publishedAt": "2026-11-09T06:30:00-05:00",
+        "bodyUrl": "briefings/2026-11-09.json",
+        "sources": [
+          {
+            "label": "Consumer Price Index",
+            "publisher": "U.S. Bureau of Labor Statistics",
+            "url": "https://www.bls.gov/cpi/"
+          },
+          {
+            "label": "FOMC meeting calendars and statements",
+            "publisher": "Federal Reserve",
+            "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+          }
+        ]
+      },
+      "episode": null
+    },
+    {
+      "editionId": "2026-11-06",
+      "topics": [
+        "Labour",
+        "Macro"
+      ],
+      "briefing": {
+        "status": "published",
+        "title": "Labour market cools without cracking",
+        "summary": "Hiring slows and wage growth moderates, yet layoffs stay low: the data remains consistent with a gradual soft landing.",
+        "takeaways": [
+          "Openings and hiring down from peak.",
+          "Wage moderation helps services inflation."
+        ],
+        "publishedAt": "2026-11-06T06:45:00-05:00",
+        "bodyUrl": "briefings/2026-11-06.json",
+        "sources": [
+          {
+            "label": "Consumer Price Index",
+            "publisher": "U.S. Bureau of Labor Statistics",
+            "url": "https://www.bls.gov/cpi/"
+          }
+        ]
+      },
+      "episode": {
+        "status": "published",
+        "episodeId": "ep-2026-11-06",
+        "title": "Bending, not breaking: the labour market in slow motion",
+        "description": "Arthur and Jack on cooling hiring, moderating wages and why low layoffs matter for a soft landing.",
+        "publishedAt": "2026-11-06T07:30:00-05:00",
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": null,
+        "audioMimeType": null,
+        "audioDurationSeconds": null,
+        "audioBytes": null,
+        "isDemoAudio": false
+      }
+    },
+    {
+      "editionId": "2026-11-16",
+      "topics": [
+        "Macro"
+      ],
+      "briefing": {
+        "status": "draft",
+        "title": "Draft: not for publication",
+        "summary": "Draft entry used to verify filtering.",
+        "takeaways": [],
+        "publishedAt": "2026-11-16T06:45:00-05:00",
+        "bodyUrl": "briefings/2026-11-16.json",
+        "sources": []
+      },
+      "episode": {
+        "status": "processing",
+        "episodeId": "ep-2026-11-16",
+        "title": "Processing episode",
+        "description": "Not yet published.",
+        "publishedAt": null,
+        "hosts": [
+          "Arthur Bennett",
+          "Jack Carter"
+        ],
+        "audioUrl": null,
+        "audioMimeType": null,
+        "audioDurationSeconds": null,
+        "audioBytes": null,
+        "isDemoAudio": false
+      }
+    }
+  ]
+}

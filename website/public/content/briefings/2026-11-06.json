@@ -1,0 +1,38 @@
+{
+  "editionId": "2026-11-06",
+  "format": "mi-blocks/v1",
+  "blocks": [
+    {
+      "type": "heading",
+      "text": "Hiring slows, layoffs stay low"
+    },
+    {
+      "type": "paragraph",
+      "text": "The labour market continues its gradual cooling. Job openings have fallen from their peak, hiring has slowed and wage growth is moderating, yet layoffs remain low by historical standards."
+    },
+    {
+      "type": "heading",
+      "text": "Wages and services inflation"
+    },
+    {
+      "type": "paragraph",
+      "text": "Slower wage growth matters most for labour-intensive services, where pay is the largest cost. A continued gentle slowdown would do much of the remaining work on core inflation without requiring a sharp rise in unemployment."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Participation has stabilised after earlier gains.",
+        "Hours worked offer an early signal of softening demand.",
+        "Sectors with the strongest post-pandemic hiring are now normalising fastest."
+      ]
+    },
+    {
+      "type": "heading",
+      "text": "Why it matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "A soft landing depends on the labour market bending rather than breaking. So far, the data is consistent with that path."
+    }
+  ]
+}
