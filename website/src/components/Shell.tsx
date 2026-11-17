@@ -3,7 +3,7 @@ import { href } from '../lib/router';
 import { formatDuration } from '../lib/format';
 import { SCENARIOS, useContent } from '../state/content';
 import { usePlayer, usePlayerState } from '../state/player';
-import { THEMES, useTheme } from '../state/theme';
+//import { THEMES, useTheme } from '../state/theme';
 import { PauseIcon, PlayIcon } from './Icons';
 
 export function Wordmark() {
@@ -23,6 +23,7 @@ export function Wordmark() {
   );
 }
 
+/*
 export function ThemeSelector() {
   const { theme, setTheme } = useTheme();
   return (
@@ -49,6 +50,8 @@ export function ThemeSelector() {
     </fieldset>
   );
 }
+*/
+
 
 const NAV: { name: string; to: string; match: Route['name'][] }[] = [
   { name: 'Dashboard', to: href.dashboard(), match: ['dashboard'] },
@@ -75,7 +78,8 @@ export function TopNav({ route }: { route: Route }) {
             })}
           </ul>
         </nav>
-        <ThemeSelector />
+        {/* Theme selector reserved for a future light/dark toggle. */}
+        {/* <ThemeSelector /> */}
       </div>
     </header>
   );

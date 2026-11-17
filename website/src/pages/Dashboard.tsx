@@ -135,7 +135,7 @@ function DashboardSkeleton() {
 export function Dashboard() {
   const { state, retry } = useContent();
   // The Forest theme has its own light homepage presentation; Blue keeps the original.
-  const refined = useTheme().theme === 'forest';
+  const refined = useTheme().theme === 'mip';
   const Header = refined ? RefinedDailyHeader : DailyHeader;
   if (state.status === 'loading') return <DashboardSkeleton />;
   if (state.status === 'error')

@@ -7,7 +7,7 @@ import { ThemeProvider } from './state/theme';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/components.css';
-import './styles/forest-home.css';
+import './styles/branding.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

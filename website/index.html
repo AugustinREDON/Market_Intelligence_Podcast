@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en-GB" data-theme="forest">
+<html lang="en-GB" data-theme="mip">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -23,12 +23,8 @@
     <script>
       // Apply the saved theme before first paint to avoid a flash of the wrong theme.
       (function () {
-        try {
-          var t = window.localStorage.getItem('mip.theme');
-          if (t === 'forest' || t === 'blue') document.documentElement.setAttribute('data-theme', t);
-        } catch (e) {
-          /* storage unavailable (e.g. sandboxed iframe): keep default */
-        }
+        // Always use MIP branding; ignore old saved theme preferences.
+        document.documentElement.setAttribute('data-theme', 'mip');
         // Page scope for route-specific styling (the Forest homepage). App.tsx keeps it in sync.
         var h = window.location.hash;
         var home = !h || h === '#' || h === '#/' || h.charAt(1) !== '/';
