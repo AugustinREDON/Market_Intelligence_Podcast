@@ -585,3 +585,92 @@
 :root[data-theme='forest'][data-page='dashboard'] .panel .skeleton {
   background: #e6e9e2;
 }
+
+/* MIP branding test — navy, yellow and orange */
+:root[data-theme='forest'][data-page='dashboard'] {
+  --brand-navy: #0d2b59;
+  --brand-yellow: #ffd600;
+  --brand-orange: #ff8500;
+
+  --bg: #f0ede5;
+  --bg-deep: #e7e2d7;
+  --panel: #ffffff;
+  --panel-raised: #f1f4f8;
+  --panel-inset: #f6f7fa;
+
+  --border: #cbd5e2;
+  --border-strong: #aabbd0;
+
+  --text: #152640;
+  --text-muted: #4b5c72;
+  --text-faint: #596b81;
+
+  --accent: var(--brand-navy);
+  --accent-strong: #173e75;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(13 43 89 / 0.06);
+  --accent-line: rgb(13 43 89 / 0.3);
+  --focus: var(--brand-navy);
+
+  --masthead: var(--brand-navy);
+  --shadow-panel:
+    0 2px 4px rgb(13 43 89 / 0.06),
+    0 8px 24px rgb(13 43 89 / 0.08);
+}
+
+/* Navy header with yellow navigation accents */
+:root[data-theme='forest'][data-page='dashboard'] .topbar,
+:root[data-theme='forest'][data-page='dashboard'] .daily {
+  --accent: var(--brand-yellow);
+  --accent-line: rgb(255 214 0 / 0.55);
+}
+
+/* Small orange detail beneath the masthead */
+:root[data-theme='forest'][data-page='dashboard'] .daily {
+  border-bottom: 3px solid var(--brand-orange);
+}
+
+/* Yellow primary actions with navy text */
+:root[data-theme='forest'][data-page='dashboard'] .btn-primary,
+:root[data-theme='forest'][data-page='dashboard'] .play-btn {
+  background: var(--brand-yellow);
+  color: var(--brand-navy);
+}
+
+:root[data-theme='forest'][data-page='dashboard'] .btn-primary:hover,
+:root[data-theme='forest'][data-page='dashboard'] .play-btn:hover {
+  background: #efc900;
+  color: var(--brand-navy);
+}
+
+:root[data-theme='forest'][data-page='dashboard']
+  .player.is-refined .play-lg {
+  box-shadow: 0 2px 6px rgb(13 43 89 / 0.16);
+}
+
+/* Improve player control visibility */
+:root[data-theme='forest'][data-page='dashboard'] .icon-btn {
+  color: var(--brand-navy);
+}
+
+:root[data-theme='forest'][data-page='dashboard'] .icon-btn:disabled {
+  opacity: 0.55;
+}
+
+:root[data-theme='forest'][data-page='dashboard'] .seek-times,
+:root[data-theme='forest'][data-page='dashboard'] .speed .faint {
+  color: #40536d;
+}
+
+:root[data-theme='forest'][data-page='dashboard'] .range {
+  --track: linear-gradient(
+    to right,
+    var(--brand-navy) 0 var(--pct, 0%),
+    #aab7c8 var(--pct, 0%) 100%
+  );
+}
+
+:root[data-theme='forest'][data-page='dashboard'] .select {
+  border-color: #8799b1;
+  color: var(--brand-navy);
+}
