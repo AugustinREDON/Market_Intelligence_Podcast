@@ -43,7 +43,7 @@
 }
 :root[data-theme='mip'] .daily-desc {
   margin-top: 6px;
-  font-size: 0.9375rem;
+  font-size:15px; /* 4. TO CHANGE FONT OF THE DAILY DESCRIPTION */
   color: var(--text-muted);
 }
 :root[data-theme='mip'] .demo-note {
@@ -464,8 +464,22 @@
 
 /* ---------- Footer & now-playing bar ---------- */
 :root[data-theme='mip'] .site-footer {
-  background: var(--bg-deep);
-  border-top-color: var(--border);
+  --text: #ffffff;
+  --text-muted: rgb(255 255 255 / 0.82);
+  --text-faint: rgb(255 255 255 / 0.74);
+  --accent: var(--brand-yellow);
+  --accent-strong: #ffe45c;
+  --accent-line: rgb(255 214 0 / 0.55);
+  --accent-soft: rgb(255 214 0 / 0.1);
+  --border: rgb(255 255 255 / 0.16);
+  --border-strong: rgb(255 255 255 / 0.3);
+  --panel-raised: rgb(255 255 255 / 0.12);
+  --focus: var(--brand-yellow);
+
+  background: var(--brand-navy);
+  color: var(--text);
+  border-top: 3px solid var(--brand-orange);
+  padding-block: 32px;
 }
 :root[data-theme='mip'] .nowbar {
   box-shadow: 0 -2px 10px rgb(18 59 45 / 0.06);
@@ -608,4 +622,130 @@
 :root[data-theme='mip'] .select {
   border-color: #8799b1;
   color: var(--brand-navy);
+}
+
+/* Header layout experiment */
+:root[data-theme='mip'] .daily-refined .daily-inner {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  padding-block: 22px;
+}
+
+.header-message,
+.header-edition {
+  min-width: 0;
+}
+
+.header-tagline { /* 1. to edit tagline */
+  font-size: clamp(22px, 2.5vw, 30px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+.header-tagline span {
+  color: var(--brand-yellow);
+}
+
+.header-edition {
+  text-align: right;
+}
+
+.header-edition-label { /* 2. to edit "Edition" */
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.header-edition-date { /* 3. to edit date */
+  font-size: clamp(18px, 2vw, 24px);
+  font-weight: 500;
+}
+
+/* Date left, catchphrase right */
+.daily-refined.date-left .header-edition {
+  order: -1;
+  text-align: left;
+}
+
+.daily-refined.date-left .header-message {
+  text-align: right;
+}
+
+@media (max-width: 719px) {
+  :root[data-theme='mip'] .daily-refined .daily-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+    padding-block: 18px;
+  }
+
+  .daily-refined .header-message,
+  .daily-refined .header-edition {
+    text-align: left;
+  }
+
+  .daily-refined.date-left .header-edition {
+  order: 1;
+  text-align: left;
+}
+
+.daily-refined.date-left .header-message {
+  text-align: left;
+}
+}
+
+/* Mobile navigation: branding above page links */
+@media (max-width: 719px) {
+  :root[data-theme='mip'] .topbar-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding-top: 0;
+  }
+
+  :root[data-theme='mip'] .topbar .wordmark {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+    gap: 12px;
+    padding-block: 14px;
+  }
+
+  :root[data-theme='mip'] .topbar .wm-logo {
+    width: 60px;
+    height: 36px;
+    max-width: none;
+    flex: 0 0 60px;
+  }
+
+  :root[data-theme='mip'] .topbar .wm-text {
+    min-width: 0;
+  }
+
+  :root[data-theme='mip'] .topbar .mainnav {
+    flex: none;
+    width: auto;
+    align-self: stretch;
+    border-top: 1px solid rgb(255 255 255 / 0.16);
+  }
+
+  :root[data-theme='mip'] .topbar .mainnav ul {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  :root[data-theme='mip'] .topbar .mainnav a {
+    min-height: 44px;
+    padding-inline: 6px;
+    justify-content: center;
+    font-size: 14px;
+  }
 }

@@ -75,24 +75,45 @@ function DailyHeader({ m }: { m: Manifest }) {
   );
 }
 
-/** Forest homepage header: label, edition date, one sentence, one consolidated sample note. */
+/** Homepage header: label, edition date, one sentence, one consolidated sample note. */
 function RefinedDailyHeader({ m }: { m: Manifest }) {
   const tz = m.publication.timeZone;
-  const b = dailyState(m).latestBriefing;
+  const briefing = dailyState(m).latestBriefing;
+
+  // Change to 'left' to try the other arrangement.
+  const datePosition: 'right' | 'left' = 'left';
+
   return (
-    <section className="daily daily-refined" aria-labelledby="daily-title">
+    <section
+      className={`daily daily-refined date-${datePosition}`}
+      aria-labelledby="daily-title"
+    >
       <div className="container daily-inner">
-        <div className="daily-main">
-          <p className="daily-label">Daily market intelligence</p>
-          <h1 className="daily-date" id="daily-title">
-            {b ? <time dateTime={b.publishedAt.slice(0, 10)}>{formatLongDate(b.publishedAt, tz)}</time> : 'No edition published yet'}
+        <div className="header-message">
+          <h1 className="header-tagline" id="daily-title">
+            Go make better <span>small talk.</span>
           </h1>
-          <p className="daily-desc">Markets, macro, business, AI and regulation, with {m.publication.hosts.join(' and ')}.</p>
+          <p className="daily-desc">
+            Your daily market briefing &amp; podcast
+          </p>
         </div>
+
+        <div className="header-edition">
+          <p className="header-edition-label">Latest edition</p>
+          <p className="header-edition-date">
+            {briefing ? (
+              <time dateTime={briefing.publishedAt}>
+                {formatLongDate(briefing.publishedAt, tz)}
+              </time>
+            ) : (
+              'Coming soon'
+            )}
+          </p>
+        </div>
+
         {m.isSampleContent && (
-          <p className="demo-note" role="note" data-testid="text-demo-note">
-            <span className="demo-note-dot" aria-hidden="true" />
-            Sample edition: the briefing, figures and demo audio are illustrative, not live reporting.
+          <p className="sr-only">
+            Demonstration content, not live reporting.
           </p>
         )}
       </div>
