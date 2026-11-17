@@ -1601,3 +1601,19 @@ body:has(.nowbar) .site-footer {
 .prose .takeaways li + li {
   margin-top: 8px;
 }
+
+/* MIP header logo */
+.wm-logo {
+  display: block;
+  width: 76px;
+  height: 44px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+@media (max-width: 600px) {
+  .wm-logo {
+    width: 60px;
+    height: 36px;
+  }
+}

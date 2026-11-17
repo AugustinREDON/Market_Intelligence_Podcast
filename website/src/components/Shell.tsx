@@ -9,9 +9,12 @@ import { PauseIcon, PlayIcon } from './Icons';
 export function Wordmark() {
   return (
     <a href={href.dashboard()} className="wordmark" aria-label="Market Intelligence Podcast — Dashboard" data-testid="link-wordmark">
-      <span className="wm-mark" aria-hidden="true">
-        MI
-      </span>
+      <img
+        src={`${import.meta.env.BASE_URL}branding/mip-logo.png`}
+        className="wm-logo"
+        alt=""
+        aria-hidden="true"
+      />
       <span className="wm-text" aria-hidden="true">
         <span className="wm-main">Market Intelligence</span>
         <span className="wm-sub">Podcast</span>
