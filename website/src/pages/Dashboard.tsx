@@ -1,4 +1,4 @@
-import type { Manifest } from '../content/types';
+import type { BriefingItem, EpisodeItem, Manifest } from '../content/types';
 import { dailyState, publishedBriefings, publishedEpisodes } from '../content/selectors';
 import { formatLongDate, formatShortDate, formatTimeParts } from '../lib/format';
 import { href } from '../lib/router';
@@ -6,7 +6,7 @@ import { useContent } from '../state/content';
 import { BriefingPanel } from '../components/BriefingPanel';
 import { EpisodePlayer } from '../components/EpisodePlayer';
 import { ArrowRight } from '../components/Icons';
-import { BriefingRow, EpisodeRow } from '../components/Lists';
+import { EditionRow } from '../components/Lists';
 import { Panel, SkeletonLines, StateMessage } from '../components/ui';
 import { sidebarModules } from './sidebarModules';
 import { useTheme } from '../state/theme';
@@ -213,9 +213,41 @@ export function Dashboard() {
     ) : null;
 
   const companion = d.episodeMatchesBriefing ? d.latestEpisode : null;
-  const recentEpisodes = episodes.filter((e) => e.episodeId !== d.latestEpisode?.episodeId).slice(0, 4);
-  const recentBriefings = briefings.filter((b) => b.editionId !== d.latestBriefing?.editionId).slice(0, 4);
+  const editionsById = new Map<
+    string,
+    {
+      editionId: string;
+      briefing: BriefingItem | null;
+      episode: EpisodeItem | null;
+    }
+  >();
 
+  for (const briefing of briefings) {
+    editionsById.set(briefing.editionId, {
+      editionId: briefing.editionId,
+      briefing,
+      episode: null,
+    });
+  }
+
+  for (const episode of episodes) {
+    const existing = editionsById.get(episode.editionId);
+
+    editionsById.set(episode.editionId, {
+      editionId: episode.editionId,
+      briefing: existing?.briefing ?? null,
+      episode,
+    });
+  }
+
+  const latestEditionId =
+    d.latestBriefing?.editionId ?? d.latestEpisode?.editionId;
+
+  // ISO date IDs keep each edition together, even when audio arrives later.
+  const recentEditions = [...editionsById.values()]
+    .filter((edition) => edition.editionId !== latestEditionId)
+    .sort((a, b) => b.editionId.localeCompare(a.editionId))
+    .slice(0, 4);
   return (
     <>
       <Header m={m} />
@@ -243,52 +275,50 @@ export function Dashboard() {
         </aside>
       </div>
 
-      <section className="container recent" aria-labelledby="recent-title">
-        <div className="section-head">
+      <section
+        className="container recent recent-editions"
+        aria-labelledby="recent-title"
+      >
+        <div className="section-head editions-heading">
           <h2 className="section-title" id="recent-title">
             Recent editions
           </h2>
-          {!refined && <p className="faint section-sub">Previous briefings and episodes, newest first.</p>}
+
+          <div className="editions-archive-links">
+            <a
+              className="text-link"
+              href={href.briefings()}
+              data-testid="link-all-briefings"
+            >
+              All briefings <ArrowRight size={14} />
+            </a>
+
+            <a
+              className="text-link"
+              href={href.episodes()}
+              data-testid="link-all-episodes"
+            >
+              All episodes <ArrowRight size={14} />
+            </a>
+          </div>
         </div>
-        <div className="recent-grid">
-          <Panel
-            label="Recent episodes"
-            labelId="recent-episodes"
-            actions={
-              <a className="text-link" href={href.episodes()} data-testid="link-all-episodes">
-                All episodes <ArrowRight size={14} />
-              </a>
-            }
-          >
-            {recentEpisodes.length ? (
-              <ul className="rows">
-                {recentEpisodes.map((e) => (
-                  <EpisodeRow key={e.episodeId} episode={e} tz={tz} simple={refined} />
-                ))}
-              </ul>
-            ) : (
-              <p className="faint">No earlier episodes.</p>
-            )}
-          </Panel>
-          <Panel
-            label="Previous briefings"
-            labelId="previous-briefings"
-            actions={
-              <a className="text-link" href={href.briefings()} data-testid="link-all-briefings">
-                All briefings <ArrowRight size={14} />
-              </a>
-            }
-          >
-            {recentBriefings.length ? (
-              <ul className="rows">
-                {recentBriefings.map((b) => (
-                  <BriefingRow key={b.editionId} briefing={b} tz={tz} simple={refined} />
-                ))}
-              </ul>
-            ) : (
-              <p className="faint">No earlier briefings.</p>
-            )}
-          </Panel>
+
+        <div className="panel editions-panel">
+          {recentEditions.length ? (
+            <ul className="edition-list">
+              {recentEditions.map((edition) => (
+                <EditionRow
+                  key={edition.editionId}
+                  editionId={edition.editionId}
+                  briefing={edition.briefing}
+                  episode={edition.episode}
+                  tz={tz}
+                />
+              ))}
+            </ul>
+          ) : (
+            <p className="faint">No earlier editions yet.</p>
+          )}
         </div>
       </section>
     </>

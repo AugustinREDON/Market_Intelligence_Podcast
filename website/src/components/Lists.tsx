@@ -1,5 +1,5 @@
 import type { BriefingItem, EpisodeItem } from '../content/types';
-import { formatDuration } from '../lib/format';
+import { formatDate, formatDuration } from '../lib/format';
 import { href } from '../lib/router';
 import { useEpisodeState } from '../state/player';
 import { DownloadLink, PlayButton } from './EpisodePlayer';
@@ -81,6 +81,92 @@ export function BriefingRow({ briefing, tz, simple = false }: { briefing: Briefi
           <span>Read</span>
           <ArrowRight size={14} />
         </span>
+      </div>
+    </li>
+  );
+}
+
+export function EditionRow({
+  editionId,
+  briefing,
+  episode,
+  tz,
+}: {
+  editionId: string;
+  briefing: BriefingItem | null;
+  episode: EpisodeItem | null;
+  tz: string;
+}) {
+  const st = useEpisodeState(episode);
+  const content = briefing ?? episode;
+
+  if (!content) return null;
+
+  const playLabel = st.playing
+    ? 'Pause'
+    : st.active && st.currentTime > 0
+      ? 'Resume'
+      : 'Play';
+
+  return (
+    <li className="edition-row">
+      <div className="edition-copy">
+        <p className="edition-date">
+          <time dateTime={content.publishedAt}>
+            {formatDate(content.publishedAt, tz)}
+          </time>
+        </p>
+
+        <h3 className="edition-title">
+          {briefing ? (
+            <a href={href.briefing(editionId)}>{briefing.title}</a>
+          ) : (
+            episode?.title
+          )}
+        </h3>
+
+        <p className="edition-summary">
+          {briefing?.summary ?? episode?.description}
+        </p>
+      </div>
+
+      <div className="edition-actions">
+        {briefing && (
+          <a
+            className="btn btn-secondary"
+            href={href.briefing(editionId)}
+            aria-label={`Read: ${briefing.title}`}
+          >
+            Read <ArrowRight size={14} />
+          </a>
+        )}
+
+        {episode?.hasAudio ? (
+          <div className="edition-listen">
+            <PlayButton episode={episode} size="sm" />
+
+            <div className="edition-play-text">
+              <span className="edition-play-label" aria-hidden="true">
+                {playLabel}
+              </span>
+
+              {episode.audioDurationSeconds != null && (
+                <span className="edition-duration">
+                  <span className="sr-only">Duration </span>
+                  {formatDuration(episode.audioDurationSeconds)}
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <span className="edition-unavailable">Audio unavailable</span>
+        )}
+
+        {st.error && (
+          <p className="edition-error inline-error" role="alert">
+            {st.error}
+          </p>
+        )}
       </div>
     </li>
   );
