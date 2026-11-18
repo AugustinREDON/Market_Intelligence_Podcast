@@ -749,3 +749,58 @@
     font-size: 14px;
   }
 }
+
+/* Footer information and future About page */
+:root[data-theme='mip'] .footer-inner {
+  align-items: center;
+}
+
+.footer-actions {
+  justify-self: end;
+  text-align: right;
+}
+
+:root[data-theme='mip'] .footer-about:disabled {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
+  font-weight: 500;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+@media (max-width: 899px) {
+  .footer-actions {
+    justify-self: center;
+    text-align: center;
+  }
+}
+
+/* Logo beside the full footer text block */
+.footer-identity {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+}
+
+.footer-logo-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+}
+
+.footer-logo {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+@media (max-width: 599px) {
+  .footer-identity {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 16px;
+  }
+}

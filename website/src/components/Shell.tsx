@@ -1,7 +1,7 @@
 import type { Route } from '../lib/router';
 import { href } from '../lib/router';
 import { formatDuration } from '../lib/format';
-import { SCENARIOS, useContent } from '../state/content';
+import { useContent } from '../state/content';
 import { usePlayer, usePlayerState } from '../state/player';
 //import { THEMES, useTheme } from '../state/theme';
 import { PauseIcon, PlayIcon } from './Icons';
@@ -121,36 +121,54 @@ export function NowPlayingBar({ hiddenForEpisodeId }: { hiddenForEpisodeId: stri
 }
 
 export function Footer() {
-  const { scenario, setScenario } = useContent();
+  const { state } = useContent();
+  const isSample =
+    state.status === 'ready' && state.manifest.isSampleContent;
+
   return (
     <footer className="site-footer">
       <div className="container footer-inner">
-        <div className="footer-col">
-          <p className="footer-brand">Market Intelligence Podcast</p>
-          <p className="faint">
-            Prototype front end. All briefings, episodes and figures shown are sample content for design review. Automatic publishing from the AWS
-            pipeline is not connected in this preview.
+        <div className="footer-identity">
+          <a
+            href={href.dashboard()}
+            className="footer-logo-link"
+            aria-label="Market Intelligence Podcast — Dashboard" >
+            <img
+              src={`${import.meta.env.BASE_URL}branding/mip-logo.png`}
+              className="footer-logo"
+              alt=""
+            />
+          </a>
+
+          <div className="footer-col">
+            <p className="footer-brand">Market Intelligence Podcast</p>
+            <p className="faint">
+              For educational purposes only, not investment advice.
+              Content is AI-generated and may contain errors.
+              Verify information independently.
+            </p>
+
+            {isSample && (
+              <p className="fine-print">
+                Preview edition: content and audio are illustrative.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="footer-actions">
+          <button
+            type="button"
+            className="btn footer-about"
+            disabled
+            aria-describedby="footer-about-note"
+          >
+            About &amp; Contact
+          </button>
+          <p id="footer-about-note" className="fine-print">
+            Coming soon
           </p>
         </div>
-        <fieldset className="scenario" data-testid="scenario-switcher">
-          <legend className="eyebrow">Prototype: content state</legend>
-          <div className="scenario-opts">
-            {SCENARIOS.map((s) => (
-              <label key={s.id} className="chip-radio">
-                <input
-                  type="radio"
-                  name="scenario"
-                  value={s.id}
-                  checked={scenario === s.id}
-                  onChange={() => setScenario(s.id)}
-                  data-testid={`radio-scenario-${s.id}`}
-                />
-                <span>{s.label}</span>
-              </label>
-            ))}
-          </div>
-          <p className="fine-print">Simulates manifest states for review. Audio playback is unaffected.</p>
-        </fieldset>
       </div>
     </footer>
   );
