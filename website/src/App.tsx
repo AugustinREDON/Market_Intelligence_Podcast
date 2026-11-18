@@ -69,8 +69,8 @@ export function App() {
           </div>
         )}
       </main>
-      <Footer />
       <NowPlayingBar hiddenForEpisodeId={latestId} />
+      <Footer />
     </>
   );
 }

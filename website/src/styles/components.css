@@ -1070,6 +1070,7 @@
   color: var(--text-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -1236,10 +1237,9 @@
 
 /* ---------- Now playing bar ---------- */
 .nowbar {
-  position: fixed;
-  left: 0;
-  right: 0;
+  position: sticky;
   bottom: 0;
+  flex-shrink: 0;
   z-index: 30;
   background: var(--panel);
   border-top: 1px solid var(--border-strong);
@@ -1278,9 +1278,6 @@
   font-size: var(--text-xs);
   color: var(--text-muted);
   flex: none;
-}
-body:has(.nowbar) .site-footer {
-  padding-bottom: 88px;
 }
 
 /* ---------- Footer ---------- */
